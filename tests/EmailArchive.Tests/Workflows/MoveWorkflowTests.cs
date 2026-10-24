@@ -24,11 +24,21 @@ public class MoveWorkflowTests
 
     private LedgerMessage Row(SourceMessageInfo m) => _ledger.Rows[MessageKeyBuilder.For(m).Value];
 
+    private List<string> WireTrace()
+    {
+        var trace = new List<string>();
+        _source.Trace = trace;
+        _target.Trace = trace;
+        _ledger.Trace = trace;
+        return trace;
+    }
+
     [Fact]
     public async Task Happy_path_copies_verifies_and_trashes()
     {
         var m = Msg(1, "2010-01-01", seen: false, flagged: true);
         _source.Messages.Add(m);
+        var trace = WireTrace();
 
         var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
 
@@ -57,6 +67,14 @@ public class MoveWorkflowTests
         Assert.NotNull(row.TrashedAt);
         Assert.Equal(new[] { MessageState.Copied, MessageState.Verified, MessageState.Trashed },
             _ledger.SaveLog.Select(s => s.State));
+
+        var relevant = trace.Where(t => t.StartsWith("target.append") || t.StartsWith("ledger.save")
+            || t.StartsWith("target.find") || t.StartsWith("source.trash")).ToArray();
+        Assert.Equal(new[]
+        {
+            "target.append:Archive", "ledger.save:Copied", "target.findById",
+            "ledger.save:Verified", "source.trash:1", "ledger.save:Trashed",
+        }, relevant);
     }
 
     [Fact]
@@ -194,9 +212,203 @@ public class MoveWorkflowTests
 
         Assert.Equal(1, summary.Selected);
         Assert.Equal(0, summary.Copied);
+        Assert.Equal(1, summary.Verified);
         Assert.Equal(1, summary.Trashed);
         Assert.Equal(new uint[] { 2 }, _source.Trashed);
         Assert.Equal(2, Row(copy).GmailUid);
+    }
+
+    [Fact]
+    public async Task Duplicate_copy_with_mismatched_headers_is_not_trashed()
+    {
+        var original = Msg(1, "2010-01-01", messageId: "<dup@x>");
+        var copy = Msg(2, "2010-01-01", messageId: "<dup@x>", subject: "different");
+        _source.Messages.Add(copy);
+        _target.Folders[TargetFolder.Archive].Add(Target(original, uid: 9));
+        _ledger.Seed(original, MessageState.Trashed, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 9; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Empty(_source.Trashed);
+        Assert.Equal("candidate headers do not match", Row(copy).FailureReason);
+    }
+
+    [Fact]
+    public async Task Duplicate_fallback_key_is_not_trashed()
+    {
+        var original = Msg(1, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id");
+        var copy = Msg(2, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id");
+        _source.Messages.Add(copy);
+        _target.Folders[TargetFolder.Archive].Add(Target(original, uid: 9) with { MessageId = null });
+        _ledger.Seed(original, MessageState.Trashed, r => { r.GmailUid = 1; r.TargetFolder = TargetFolder.Archive; r.TargetUid = 9; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(0, summary.Trashed);
+        Assert.Empty(_source.Trashed);
+        Assert.Empty(_target.Appended);
+        var row = Row(original);
+        Assert.Equal(MessageState.Trashed, row.State);
+        Assert.Equal(1, row.GmailUid);
+    }
+
+    [Fact]
+    public async Task Resumed_verified_row_with_different_uid_is_reverified()
+    {
+        var original = Msg(1, "2010-01-01", messageId: "<dup@x>");
+        var copy = Msg(2, "2010-01-01", messageId: "<dup@x>", subject: "changed");
+        _source.Messages.Add(copy);
+        _target.Folders[TargetFolder.Archive].Add(Target(original, uid: 5));
+        _ledger.Seed(original, MessageState.Verified, r => { r.GmailUid = 1; r.TargetFolder = TargetFolder.Archive; r.TargetUid = 5; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Empty(_source.Trashed);
+    }
+
+    [Fact]
+    public async Task Resumed_verified_row_with_different_uid_and_matching_headers_is_trashed()
+    {
+        var original = Msg(1, "2010-01-01", messageId: "<dup@x>");
+        var copy = Msg(2, "2010-01-01", messageId: "<dup@x>");
+        _source.Messages.Add(copy);
+        _target.Folders[TargetFolder.Archive].Add(Target(original, uid: 5));
+        _ledger.Seed(original, MessageState.Verified, r => { r.GmailUid = 1; r.TargetFolder = TargetFolder.Archive; r.TargetUid = 5; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Verified);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(new uint[] { 2 }, _source.Trashed);
+    }
+
+    [Fact]
+    public async Task Append_that_lands_but_throws_is_not_repeated()
+    {
+        _source.Messages.Add(Msg(1, "2010-01-01"));
+        _target.AppendThrowsAfterLanding = true;
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Single(_target.Folders[TargetFolder.Archive]);
+        Assert.Equal(1, summary.Copied);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(1, _source.ReconnectCount);
+        Assert.Equal(1, _target.ReconnectCount);
+    }
+
+    [Fact]
+    public async Task Pending_row_from_earlier_run_finds_existing_copy_before_appending()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 7));
+        _ledger.Seed(m, MessageState.Pending);
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Empty(_target.Appended);
+        Assert.Equal(1, summary.AlreadyInTarget);
+        Assert.Equal(1, summary.Trashed);
+    }
+
+    [Fact]
+    public async Task Fresh_row_does_not_search_before_append()
+    {
+        _source.Messages.Add(Msg(1, "2010-01-01"));
+        var trace = WireTrace();
+
+        await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        var appendAt = trace.IndexOf("target.append:Archive");
+        Assert.True(appendAt >= 0);
+        Assert.DoesNotContain(trace.Take(appendAt), t => t.StartsWith("target.find"));
+    }
+
+    [Fact]
+    public async Task Trash_failure_marks_failed_and_keeps_target_copy()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _source.TrashFailure = new IOException("boom");
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(1, summary.Verified);
+        Assert.Equal(0, summary.Trashed);
+        var row = Row(m);
+        Assert.Equal(MessageState.Failed, row.State);
+        Assert.Equal("boom", row.FailureReason);
+        Assert.Single(_target.Folders[TargetFolder.Archive]);
+    }
+
+    [Fact]
+    public async Task Purge_failure_keeps_trashed_state()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _source.PurgeFailure = new IOException("nope");
+
+        var summary = await Workflow().RunAsync(Opts(purge: true), CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(0, summary.Purged);
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(1, summary.ExitCode);
+        var row = Row(m);
+        Assert.Equal(MessageState.Trashed, row.State);
+        Assert.Equal("nope", row.FailureReason);
+    }
+
+    [Fact]
+    public async Task Find_failure_after_copy_marks_failed_without_trashing()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.FindFailure = new IOException("search down");
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Copied);
+        Assert.Equal(1, summary.Failed);
+        Assert.Empty(_source.Trashed);
+        var row = Row(m);
+        Assert.Equal(MessageState.Failed, row.State);
+        Assert.NotNull(row.TargetUid);
+    }
+
+    [Fact]
+    public async Task Auth_required_from_target_reconnect_propagates()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _source.Messages.Add(Msg(2, "2010-01-02"));
+        _source.FetchFailure = _ => new IOException("dropped");
+        _target.ReconnectFailure = new AuthRequiredException("sign in again");
+
+        await Assert.ThrowsAsync<AuthRequiredException>(() => Workflow().RunAsync(Opts(), CancellationToken.None));
+
+        Assert.Empty(_source.Trashed);
+        Assert.Equal(3, _ledger.Runs.Single().ExitCode);
+        Assert.Equal(MessageState.Pending, Row(m).State);
+        Assert.Equal(0, _ledger.Runs.Single().Failed);
+        Assert.Equal(1, _target.ReconnectCount);
+    }
+
+    [Fact]
+    public async Task Library_timeout_counts_as_message_failure_not_cancellation()
+    {
+        _source.Messages.Add(Msg(1, "2010-01-01"));
+        _source.FetchFailure = _ => new TaskCanceledException("timeout");
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.False(summary.Aborted);
     }
 
     [Fact]
@@ -247,7 +459,8 @@ public class MoveWorkflowTests
     [Fact]
     public async Task Auth_required_during_reconnect_propagates()
     {
-        _source.Messages.Add(Msg(1, "2010-01-01"));
+        var first = Msg(1, "2010-01-01");
+        _source.Messages.Add(first);
         _source.Messages.Add(Msg(2, "2010-01-02"));
         _source.FetchFailure = _ => new IOException("dropped");
         _source.ReconnectFailure = new AuthRequiredException("sign in again");
@@ -256,6 +469,9 @@ public class MoveWorkflowTests
 
         Assert.Empty(_source.Trashed);
         Assert.Equal(3, _ledger.Runs.Single().ExitCode);
+        Assert.Equal(MessageState.Pending, Row(first).State);
+        Assert.Equal(0, _ledger.Runs.Single().Failed);
+        Assert.Equal(1, _source.ReconnectCount);
     }
 
     [Fact]
