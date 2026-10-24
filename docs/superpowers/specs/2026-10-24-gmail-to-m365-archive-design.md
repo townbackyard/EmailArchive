@@ -176,6 +176,9 @@ fields only. The ledger records which key type was used.
 - A verify failure skips that message only.
 - A network or IMAP error triggers one reconnect and retry of the current step.
 - Three consecutive message failures abort the run with a non-zero exit code.
+  Only unexpected errors (exceptions) count toward the abort; a verification failure,
+  a purge failure after a successful trash, or a skipped fallback-key duplicate is
+  recorded and the run continues.
 - No Gmail message is trashed unless its ledger row is `Verified` in the same
   or an earlier run.
 
@@ -284,3 +287,7 @@ Supervised first use against real accounts, in order:
   limit: large backlogs may need several runs; the caps make this routine.
 - MSAL token expiry after 90 days of inactivity: handled by exit code 3 and
   `login`.
+- Exchange Online's receive size limit (36 MB by default) rejects very large messages;
+  they fail verification every run and stay in Gmail.
+- A Gmail UIDVALIDITY reset makes earlier fallback-key rows refuse their messages
+  until the ledger is cleaned.
