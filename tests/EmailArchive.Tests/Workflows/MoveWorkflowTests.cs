@@ -178,9 +178,11 @@ public class MoveWorkflowTests
         var m = Msg(1, "2010-01-01");
         _source.Messages.Add(m);
         _ledger.Seed(m, MessageState.Failed, r => r.FailureReason = "earlier");
+        var trace = WireTrace();
 
         var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
 
+        Assert.True(trace.IndexOf("ledger.save:Pending") is var saved and >= 0 && saved < trace.IndexOf("source.fetch:1"));
         Assert.Equal(1, summary.Copied);
         Assert.Equal(1, summary.Trashed);
         Assert.Null(Row(m).FailureReason);
@@ -207,6 +209,7 @@ public class MoveWorkflowTests
         _source.Messages.Add(copy);
         _target.Folders[TargetFolder.Archive].Add(Target(original, uid: 9));
         _ledger.Seed(original, MessageState.Trashed, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 9; });
+        var trace = WireTrace();
 
         var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
 
@@ -216,6 +219,7 @@ public class MoveWorkflowTests
         Assert.Equal(1, summary.Trashed);
         Assert.Equal(new uint[] { 2 }, _source.Trashed);
         Assert.Equal(2, Row(copy).GmailUid);
+        Assert.True(trace.IndexOf("ledger.save:AlreadyInTarget") is var saved and >= 0 && saved < trace.IndexOf("target.findById"));
     }
 
     [Fact]
@@ -252,6 +256,78 @@ public class MoveWorkflowTests
         var row = Row(original);
         Assert.Equal(MessageState.Trashed, row.State);
         Assert.Equal(1, row.GmailUid);
+    }
+
+    [Fact]
+    public async Task Fallback_key_row_in_verified_state_is_not_reused_for_other_uid()
+    {
+        var original = Msg(1, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id");
+        var copy = Msg(2, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id");
+        _source.Messages.Add(copy);
+        _target.Folders[TargetFolder.Archive].Add(Target(original, uid: 5) with { MessageId = null });
+        _ledger.Seed(original, MessageState.Verified, r => { r.GmailUid = 1; r.TargetFolder = TargetFolder.Archive; r.TargetUid = 5; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(0, summary.Trashed);
+        Assert.Empty(_source.Trashed);
+        Assert.Empty(_target.Appended);
+        var row = Row(original);
+        Assert.Equal(MessageState.Verified, row.State);
+        Assert.Equal(1, row.GmailUid);
+        Assert.Empty(_ledger.SaveLog);
+    }
+
+    [Fact]
+    public async Task Fallback_key_row_failed_after_trash_failure_is_not_reused_for_other_uid()
+    {
+        _source.Messages.Add(Msg(1, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id"));
+        _source.Messages.Add(Msg(2, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id"));
+        _source.TrashFailure = new IOException("boom");
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Copied);
+        Assert.Equal(2, summary.Failed);
+        Assert.Empty(_source.Trashed);
+        Assert.Single(_target.Folders[TargetFolder.Archive]);
+        Assert.False(summary.Aborted);
+    }
+
+    [Fact]
+    public async Task Pending_row_from_earlier_run_appends_when_existing_copy_has_different_headers()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 7) with { Subject = "other" });
+        _ledger.Seed(m, MessageState.Pending);
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Copied);
+        Assert.Equal(1, summary.Verified);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Single(_target.Appended);
+    }
+
+    [Fact]
+    public async Task Row_failed_earlier_in_same_run_is_looked_up_before_second_append()
+    {
+        _source.Messages.Add(Msg(1, "2010-01-01", messageId: "<same@x>"));
+        _source.Messages.Add(Msg(2, "2010-01-02", messageId: "<same@x>"));
+        _target.AppendFailuresRemaining = 2;
+        var trace = WireTrace();
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Copied);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Single(_target.Folders[TargetFolder.Archive]);
+        var lastAppend = trace.LastIndexOf("target.append:Archive");
+        var secondAppend = trace.IndexOf("target.append:Archive", trace.IndexOf("target.append:Archive") + 1);
+        Assert.True(lastAppend > secondAppend);
+        Assert.Contains(trace.Skip(secondAppend + 1).Take(lastAppend - secondAppend - 1), t => t == "target.findById");
     }
 
     [Fact]
@@ -397,6 +473,7 @@ public class MoveWorkflowTests
         Assert.Equal(MessageState.Pending, Row(m).State);
         Assert.Equal(0, _ledger.Runs.Single().Failed);
         Assert.Equal(1, _target.ReconnectCount);
+        Assert.Equal(1, _source.ReconnectCount);
     }
 
     [Fact]

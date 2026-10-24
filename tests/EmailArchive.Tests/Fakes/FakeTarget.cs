@@ -17,6 +17,8 @@ public sealed class FakeTarget : IMailTarget
     /// <summary>Append reports success but nothing becomes searchable.</summary>
     public bool AppendIsInvisible { get; set; }
     public Exception? AppendFailure { get; set; }
+    /// <summary>While greater than zero, each AppendAsync call decrements it and throws without storing.</summary>
+    public int AppendFailuresRemaining { get; set; }
     /// <summary>Models a lost APPEND response: the message lands, then the call throws once.</summary>
     public bool AppendThrowsAfterLanding { get; set; }
     public Exception? ReconnectFailure { get; set; }
@@ -49,6 +51,11 @@ public sealed class FakeTarget : IMailTarget
     public Task<uint?> AppendAsync(TargetFolder folder, MimeMessage message, DateTimeOffset internalDate, bool seen, bool flagged, CancellationToken ct)
     {
         Trace?.Add($"target.append:{folder}");
+        if (AppendFailuresRemaining > 0)
+        {
+            AppendFailuresRemaining--;
+            throw AppendFailure ?? new IOException("append failed");
+        }
         if (AppendFailure is not null) throw AppendFailure;
         Appended.Add((folder, message, internalDate, seen, flagged));
         var info = new TargetMessageInfo(
