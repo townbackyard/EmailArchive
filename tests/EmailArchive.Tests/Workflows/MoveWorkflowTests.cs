@@ -158,16 +158,17 @@ public class MoveWorkflowTests
     }
 
     [Fact]
-    public async Task Resumes_from_Verified_state_straight_to_trash()
+    public async Task Resumes_from_Verified_state_reverifies_then_trashes()
     {
         var m = Msg(1, "2010-01-01");
         _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 5));
         _ledger.Seed(m, MessageState.Verified, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 5; });
 
         var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
 
         Assert.Empty(_target.Appended);
-        Assert.Equal(0, summary.Verified);
+        Assert.Equal(1, summary.Verified);
         Assert.Equal(1, summary.Trashed);
         Assert.Equal(new uint[] { 1 }, _source.Trashed);
     }
@@ -282,6 +283,8 @@ public class MoveWorkflowTests
     [Fact]
     public async Task Fallback_key_row_failed_after_trash_failure_is_not_reused_for_other_uid()
     {
+        _target.AppendTransform = t => t with { MessageId = null };
+        var trace = WireTrace();
         _source.Messages.Add(Msg(1, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id"));
         _source.Messages.Add(Msg(2, "2010-01-01", messageId: null, from: "x@y.z", subject: "no id"));
         _source.TrashFailure = new IOException("boom");
@@ -290,6 +293,8 @@ public class MoveWorkflowTests
 
         Assert.Equal(1, summary.Copied);
         Assert.Equal(2, summary.Failed);
+        Assert.Equal(1, summary.Verified);
+        Assert.DoesNotContain(trace, t => t.StartsWith("source.trash:2"));
         Assert.Empty(_source.Trashed);
         Assert.Single(_target.Folders[TargetFolder.Archive]);
         Assert.False(summary.Aborted);
@@ -572,6 +577,111 @@ public class MoveWorkflowTests
         Assert.Equal(1, run.Trashed);
         Assert.Equal(0, run.ExitCode);
         Assert.NotNull(run.FinishedAt);
+    }
+
+    [Fact]
+    public async Task Ledger_insert_failure_counts_as_message_failure_and_continues()
+    {
+        var first = Msg(1, "2010-01-01");
+        var second = Msg(2, "2010-01-02");
+        _source.Messages.Add(first);
+        _source.Messages.Add(second);
+        var firstKey = MessageKeyBuilder.For(first).Value;
+        _ledger.GetOrCreateFailure = k => k == firstKey ? new InvalidOperationException("truncated") : null;
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(new uint[] { 2 }, _source.Trashed);
+        Assert.False(_ledger.Rows.ContainsKey(firstKey));
+    }
+
+    [Fact]
+    public async Task Three_consecutive_verification_failures_do_not_abort()
+    {
+        for (uint i = 1; i <= 5; i++) _source.Messages.Add(Msg(i, $"2010-01-0{i}"));
+        _target.AppendTransform = t => t with { Subject = "corrupted" };
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.False(summary.Aborted);
+        Assert.Equal(5, summary.Failed);
+        Assert.Equal(1, summary.ExitCode);
+        Assert.Empty(_source.Trashed);
+    }
+
+    [Fact]
+    public async Task Fresh_append_verifies_by_uid_when_search_lags()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.SearchIsLagging = true;
+        var trace = WireTrace();
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Copied);
+        Assert.Equal(1, summary.Verified);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Contains(trace, t => t.StartsWith("target.getByUid:"));
+    }
+
+    [Fact]
+    public async Task Lagging_search_still_detects_prior_duplicate()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 9));
+        _target.SearchIsLagging = true;
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Single(_target.Appended);
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(0, summary.Trashed);
+        Assert.Empty(_source.Trashed);
+        Assert.Equal("2 matching copies in target", Row(m).FailureReason);
+    }
+
+    [Fact]
+    public async Task Resumed_verified_row_whose_target_copy_vanished_is_not_trashed()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _ledger.Seed(m, MessageState.Verified, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 5; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Empty(_source.Trashed);
+    }
+
+    [Fact]
+    public async Task Pending_row_with_copied_at_and_header_mismatch_is_not_appended_again()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 7) with { Subject = "re-encoded" });
+        _ledger.Seed(m, MessageState.Pending, r => r.CopiedAt = DateTimeOffset.UtcNow);
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Empty(_target.Appended);
+        Assert.Equal(0, summary.Copied);
+        Assert.Equal(1, summary.Failed);
+        Assert.Empty(_source.Trashed);
+    }
+
+    [Fact]
+    public async Task Finish_run_failure_does_not_mask_auth_required()
+    {
+        _source.Messages.Add(Msg(1, "2010-01-01"));
+        _source.FetchFailure = _ => new IOException("dropped");
+        _source.ReconnectFailure = new AuthRequiredException("sign in again");
+        _ledger.FinishRunFailure = new InvalidOperationException("db down");
+
+        await Assert.ThrowsAsync<AuthRequiredException>(() => Workflow().RunAsync(Opts(), CancellationToken.None));
     }
 
     [Fact]

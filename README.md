@@ -29,7 +29,9 @@ Options for `report` and `move`: `--keep-years N`, `--max-messages N`, `--max-by
 
 Exit codes: 0 success, 1 some messages failed (see the log) or a command-line usage error, 2 aborted or configuration error, 3 Microsoft sign-in required.
 
-Messages that have no Message-ID header and share the same date, sender and subject as a message that was already archived are left in Gmail and logged as a warning for manual review. They count as failures (exit code 1) but never abort the run.
+Messages that have no Message-ID header and share the same date, sender and subject as a message that was already archived are left in Gmail and logged as a warning for manual review. They count as failures (exit code 1) but never abort the run. Messages larger than your Microsoft 365 mailbox's receive limit (36 MB by default) fail verification every run and stay in Gmail.
+
+Do not run two instances at once (for example a manual run while the scheduled task is running); they would both copy the same messages.
 
 Schedule it monthly with [Task Scheduler](docs/setup-schedule.md).
 
@@ -41,7 +43,7 @@ storage. Freeing space means moving the message to Gmail Trash, and nothing
 should go there until it is verified to exist in the destination mailbox. None
 of the free tools do that per message, oldest first, on a schedule.
 
-## How it will work
+## How it works
 
 - C# / .NET 10 console app using MailKit for IMAP on both sides.
 - Gmail: app password, stored in Windows Credential Manager.

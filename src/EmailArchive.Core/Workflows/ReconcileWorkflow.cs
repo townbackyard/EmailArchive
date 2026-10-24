@@ -41,7 +41,15 @@ public sealed class ReconcileWorkflow(IMailTarget target, ILedger ledger, ILogge
             run.AlreadyInTarget = recorded;
             run.FinishedAt = DateTimeOffset.UtcNow;
             run.ExitCode = exitCode;
-            await ledger.FinishRunAsync(run, CancellationToken.None);
+            try
+            {
+                await ledger.FinishRunAsync(run, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // Must never replace the original exception (an AuthRequiredException still has to reach exit 3).
+                logger.LogError(ex, "Could not record the run result in the ledger");
+            }
         }
 
         return new ReconcileSummary(scanned, recorded);

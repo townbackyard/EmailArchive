@@ -26,6 +26,20 @@ public class LedgerRulesTests
     }
 
     [Fact]
+    public void NewFromSource_truncates_long_subject_and_address()
+    {
+        var m = Msg(5, "2010-03-04", from: new string('a', 600), subject: new string('s', 3000));
+        var row = LedgerRules.NewFromSource(MessageKeyBuilder.For(m), m, runId: 1);
+
+        Assert.Equal(2048, row.Subject.Length);
+        Assert.Equal(512, row.FromAddress.Length);
+
+        var applied = LedgerRules.ApplyTarget(null, MessageKeyBuilder.For(m), Target(m), runId: 1)!;
+        Assert.Equal(2048, applied.Subject.Length);
+        Assert.Equal(512, applied.FromAddress.Length);
+    }
+
+    [Fact]
     public void ApplyTarget_creates_AlreadyInTarget_row_when_missing()
     {
         var m = Msg(1, "2010-01-01");

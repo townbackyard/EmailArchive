@@ -5,14 +5,19 @@ namespace EmailArchive.Core.Ledger;
 /// <summary>Pure ledger transitions shared by the SQL implementation and test fakes.</summary>
 public static class LedgerRules
 {
+    public const int MaxSubjectLength = 2048;
+    public const int MaxAddressLength = 512;
+
+    private static string Truncate(string value, int max) => value.Length <= max ? value : value[..max];
+
     public static LedgerMessage NewFromSource(MessageKey key, SourceMessageInfo source, int runId) => new()
     {
         KeyType = key.Type,
         Key = key.Value,
         GmailUid = source.Uid,
         InternalDate = source.InternalDate,
-        FromAddress = source.From,
-        Subject = source.Subject,
+        FromAddress = Truncate(source.From, MaxAddressLength),
+        Subject = Truncate(source.Subject, MaxSubjectLength),
         IsSent = source.IsSent,
         SourceSize = source.Size,
         State = MessageState.Pending,
@@ -29,8 +34,8 @@ public static class LedgerRules
                 KeyType = key.Type,
                 Key = key.Value,
                 InternalDate = target.HeaderDate,
-                FromAddress = target.From,
-                Subject = target.Subject,
+                FromAddress = Truncate(target.From, MaxAddressLength),
+                Subject = Truncate(target.Subject, MaxSubjectLength),
                 IsSent = target.Folder == TargetFolder.Sent,
                 TargetFolder = target.Folder,
                 TargetUid = target.Uid,

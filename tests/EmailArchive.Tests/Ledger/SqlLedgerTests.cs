@@ -41,6 +41,7 @@ public class SqlLedgerTests
 
         row.State = MessageState.Trashed;
         await ledger.SaveAsync(row, CancellationToken.None);
+        Assert.Empty(db.ChangeTracker.Entries());
 
         var completed = await ledger.CompletedAsync(CancellationToken.None);
         Assert.Equal(42u, completed[key.Value]);
@@ -51,7 +52,13 @@ public class SqlLedgerTests
         run.Trashed = 1;
         run.FinishedAt = DateTimeOffset.UtcNow;
         await ledger.FinishRunAsync(run, CancellationToken.None);
-        Assert.Equal(1, (await db.Runs.SingleAsync(r => r.Id == run.Id)).Trashed);
+        Assert.Empty(db.ChangeTracker.Entries());
+
+        // Read back through a separate context so persistence, not the change tracker, is what is proven.
+        var readOptions = new DbContextOptionsBuilder<EmailArchiveDbContext>().UseSqlServer(Conn).Options;
+        await using var reader = new EmailArchiveDbContext(readOptions);
+        Assert.Equal(1, (await reader.Runs.SingleAsync(r => r.Id == run.Id)).Trashed);
+        Assert.Equal(MessageState.Trashed, (await reader.Messages.SingleAsync(x => x.Key == key.Value)).State);
     }
 
     [Fact]

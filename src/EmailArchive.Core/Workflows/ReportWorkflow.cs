@@ -48,7 +48,15 @@ public sealed class ReportWorkflow(IMailSource source, ILedger ledger, ILogger<R
         {
             run.FinishedAt = DateTimeOffset.UtcNow;
             run.ExitCode = exitCode;
-            await ledger.FinishRunAsync(run, CancellationToken.None);
+            try
+            {
+                await ledger.FinishRunAsync(run, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // Must never replace the original exception (an AuthRequiredException still has to reach exit 3).
+                logger.LogError(ex, "Could not record the run result in the ledger");
+            }
         }
 
         return summary;

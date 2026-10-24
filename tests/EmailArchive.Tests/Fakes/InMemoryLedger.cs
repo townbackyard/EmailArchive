@@ -14,6 +14,9 @@ public sealed class InMemoryLedger : ILedger
     public List<(string Key, MessageState State)> SaveLog { get; } = new();
     /// <summary>Shared call trace; when set, every method appends an entry.</summary>
     public List<string>? Trace { get; set; }
+    /// <summary>Returns an exception to throw from GetOrCreateAsync for a given key value, or null.</summary>
+    public Exception? FinishRunFailure { get; set; }
+    public Func<string, Exception?>? GetOrCreateFailure { get; set; }
     private int _nextId = 1;
 
     private static LedgerMessage Clone(LedgerMessage m) => new()
@@ -51,6 +54,7 @@ public sealed class InMemoryLedger : ILedger
     public Task FinishRunAsync(LedgerRun run, CancellationToken ct)
     {
         Trace?.Add("ledger.finishRun");
+        if (FinishRunFailure is not null) throw FinishRunFailure;
         return Task.CompletedTask;
     }
 
@@ -71,6 +75,7 @@ public sealed class InMemoryLedger : ILedger
     public Task<LedgerMessage> GetOrCreateAsync(MessageKey key, SourceMessageInfo source, int runId, CancellationToken ct)
     {
         Trace?.Add("ledger.getOrCreate");
+        if (GetOrCreateFailure?.Invoke(key.Value) is { } failure) throw failure;
         if (Rows.TryGetValue(key.Value, out var existing)) return Task.FromResult(Clone(existing));
         var row = LedgerRules.NewFromSource(key, source, runId);
         row.Id = _nextId++;

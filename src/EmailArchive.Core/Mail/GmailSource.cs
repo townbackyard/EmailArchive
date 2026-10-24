@@ -97,7 +97,7 @@ public sealed class GmailSource(GmailSettings settings, string appPassword, ILog
     {
         var moved = await AllMail.MoveToAsync(new UniqueId(uid), Trash, ct);
         if (moved is not { } trashed) return null;
-        _trashUidValidity ??= trashed.Validity;
+        if (trashed.Validity != 0) _trashUidValidity ??= trashed.Validity;
         return trashed.Id;
     }
 
@@ -118,7 +118,13 @@ public sealed class GmailSource(GmailSettings settings, string appPassword, ILog
         {
             try
             {
-                await AllMail.OpenAsync(FolderAccess.ReadWrite, ct);
+                var allMail = AllMail;
+                await allMail.OpenAsync(FolderAccess.ReadWrite, ct);
+                if (_allMailUidValidity is { } known && allMail.UidValidity != known)
+                {
+                    logger.LogWarning("Gmail All Mail UIDVALIDITY changed during purge; reconnecting so the next operation re-checks it");
+                    await ShutdownAsync(graceful: false, ct);
+                }
             }
             catch (Exception ex)
             {

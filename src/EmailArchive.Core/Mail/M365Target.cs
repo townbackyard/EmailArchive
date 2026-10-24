@@ -42,6 +42,11 @@ public sealed class M365Target(
             await client.AuthenticateAsync(new SaslMechanismOAuth2(username, token), ct);
             _client = client;
         }
+        catch (AuthenticationException ex)
+        {
+            client.Dispose();
+            throw new AuthRequiredException("Microsoft 365 rejected the sign-in token. Run: EmailArchive login", ex);
+        }
         catch
         {
             client.Dispose();
@@ -76,12 +81,27 @@ public sealed class M365Target(
         var mailFolder = Resolve(folder);
         await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
 
-        var uids = await SearchWithRetryAsync(mailFolder, SearchQuery.HeaderContains("Message-Id", messageId), $"Message-Id {messageId}", ct);
-        return await SummarizeAsync(mailFolder, folder, uids, ct);
+        // HEADER search is a substring match; keep only exact Message-ID matches, and retry while none match.
+        for (var attempt = 1; ; attempt++)
+        {
+            var uids = await mailFolder.SearchAsync(SearchQuery.HeaderContains("Message-Id", messageId), ct);
+            var exact = (await SummarizeAsync(mailFolder, folder, uids, ct))
+                .Where(s => string.Equals(MessageKeyBuilder.NormalizeMessageId(s.MessageId), messageId, StringComparison.Ordinal))
+                .ToList();
+            if (exact.Count > 0 || attempt >= SearchAttempts)
+                return exact;
+
+            logger.LogDebug("Message-Id {MessageId} not yet searchable in {Folder}, retrying", messageId, mailFolder.FullName);
+            await Task.Delay(_searchRetryDelay, ct);
+        }
     }
 
     public async Task<IReadOnlyList<TargetMessageInfo>> FindByFallbackAsync(TargetFolder folder, DateTimeOffset? headerDate, string from, string subject, CancellationToken ct)
     {
+        // Nothing to search on: an unfiltered search would match the whole folder.
+        if (headerDate is null && string.IsNullOrWhiteSpace(HeaderNormalizer.NormalizeAddress(from)) && string.IsNullOrWhiteSpace(HeaderNormalizer.NormalizeSubject(subject)))
+            return Array.Empty<TargetMessageInfo>();
+
         var mailFolder = Resolve(folder);
         await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
 
@@ -95,6 +115,14 @@ public sealed class M365Target(
 
         var uids = await SearchWithRetryAsync(mailFolder, query, "fallback match", ct);
         return await SummarizeAsync(mailFolder, folder, uids, ct);
+    }
+
+    public async Task<TargetMessageInfo?> GetByUidAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        var mailFolder = Resolve(folder);
+        await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
+        var result = await SummarizeAsync(mailFolder, folder, new[] { new UniqueId(uid) }, ct);
+        return result.Count > 0 ? result[0] : null;
     }
 
     public async Task<IReadOnlyList<TargetMessageInfo>> ListAllAsync(TargetFolder folder, CancellationToken ct)

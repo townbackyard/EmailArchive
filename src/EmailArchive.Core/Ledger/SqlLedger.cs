@@ -10,6 +10,7 @@ public sealed class SqlLedger(EmailArchiveDbContext db) : ILedger
         var run = new LedgerRun { Mode = mode, StartedAt = DateTimeOffset.UtcNow, CutoffDate = cutoff };
         db.Runs.Add(run);
         await db.SaveChangesAsync(ct);
+        db.ChangeTracker.Clear();
         return run;
     }
 
@@ -17,6 +18,7 @@ public sealed class SqlLedger(EmailArchiveDbContext db) : ILedger
     {
         db.Runs.Update(run);
         await db.SaveChangesAsync(ct);
+        db.ChangeTracker.Clear();
     }
 
     public async Task<IReadOnlyDictionary<string, uint>> CompletedAsync(CancellationToken ct)
@@ -38,7 +40,17 @@ public sealed class SqlLedger(EmailArchiveDbContext db) : ILedger
 
         var row = LedgerRules.NewFromSource(key, source, runId);
         db.Messages.Add(row);
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // Do not leave the failed insert tracked, or it would be retried with every later SaveChanges.
+            db.Entry(row).State = EntityState.Detached;
+            throw;
+        }
+        db.ChangeTracker.Clear();
         return row;
     }
 
@@ -46,6 +58,7 @@ public sealed class SqlLedger(EmailArchiveDbContext db) : ILedger
     {
         db.Messages.Update(message);
         await db.SaveChangesAsync(ct);
+        db.ChangeTracker.Clear();
     }
 
     public async Task<bool> RecordTargetAsync(MessageKey key, TargetMessageInfo target, int runId, CancellationToken ct)
@@ -55,6 +68,7 @@ public sealed class SqlLedger(EmailArchiveDbContext db) : ILedger
         if (row is null) return false;
         if (existing is null) db.Messages.Add(row);
         await db.SaveChangesAsync(ct);
+        db.ChangeTracker.Clear();
         return true;
     }
 }

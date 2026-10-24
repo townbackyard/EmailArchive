@@ -26,6 +26,9 @@ public sealed class FakeTarget : IMailTarget
     public int ReconnectCount { get; private set; }
     /// <summary>Shared call trace; when set, every method appends an entry.</summary>
     public List<string>? Trace { get; set; }
+    /// <summary>While true, searches only see messages that were in the folder before the most recent append.</summary>
+    public bool SearchIsLagging { get; set; }
+    private readonly Dictionary<TargetFolder, int> _indexedCount = new();
     private uint _nextUid = 1;
 
     public Task ConnectAsync(CancellationToken ct)
@@ -58,6 +61,7 @@ public sealed class FakeTarget : IMailTarget
         }
         if (AppendFailure is not null) throw AppendFailure;
         Appended.Add((folder, message, internalDate, seen, flagged));
+        _indexedCount[folder] = Folders[folder].Count;
         var info = new TargetMessageInfo(
             folder,
             _nextUid++,
@@ -81,7 +85,7 @@ public sealed class FakeTarget : IMailTarget
         Trace?.Add("target.findById");
         if (FindFailure is not null) throw FindFailure;
         return Task.FromResult<IReadOnlyList<TargetMessageInfo>>(
-            Folders[folder].Where(m => MessageKeyBuilder.NormalizeMessageId(m.MessageId) == messageId).ToList());
+            Indexed(folder).Where(m => MessageKeyBuilder.NormalizeMessageId(m.MessageId) == messageId).ToList());
     }
 
     public Task<IReadOnlyList<TargetMessageInfo>> FindByFallbackAsync(TargetFolder folder, DateTimeOffset? headerDate, string from, string subject, CancellationToken ct)
@@ -89,12 +93,21 @@ public sealed class FakeTarget : IMailTarget
         Trace?.Add("target.findFallback");
         if (FindFailure is not null) throw FindFailure;
         return Task.FromResult<IReadOnlyList<TargetMessageInfo>>(
-            Folders[folder].Where(m =>
+            Indexed(folder).Where(m =>
                 m.MessageId is null
                 && HeaderNormalizer.DatesMatch(m.HeaderDate, headerDate)
                 && HeaderNormalizer.NormalizeAddress(m.From) == HeaderNormalizer.NormalizeAddress(from)
                 && HeaderNormalizer.NormalizeSubject(m.Subject) == HeaderNormalizer.NormalizeSubject(subject)).ToList());
     }
+
+    public Task<TargetMessageInfo?> GetByUidAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        Trace?.Add($"target.getByUid:{uid}");
+        return Task.FromResult(Folders[folder].FirstOrDefault(m => m.Uid == uid));
+    }
+
+    private IEnumerable<TargetMessageInfo> Indexed(TargetFolder folder) =>
+        SearchIsLagging && _indexedCount.TryGetValue(folder, out var count) ? Folders[folder].Take(count) : Folders[folder];
 
     public Task<IReadOnlyList<TargetMessageInfo>> ListAllAsync(TargetFolder folder, CancellationToken ct)
     {

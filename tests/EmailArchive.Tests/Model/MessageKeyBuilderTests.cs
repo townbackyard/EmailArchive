@@ -26,6 +26,14 @@ public class MessageKeyBuilderTests
     }
 
     [Fact]
+    public void Overlong_message_id_falls_back_to_hash()
+    {
+        var key = MessageKeyBuilder.Build("<" + new string('x', 600) + "@example.com>", Date, "a@b.c", "s");
+        Assert.Equal(KeyType.Fallback, key.Type);
+        Assert.Equal(64, key.Value.Length);
+    }
+
+    [Fact]
     public void Fallback_is_stable_across_header_formatting()
     {
         var k1 = MessageKeyBuilder.Build(null, Date, "Jane <JANE@x.com>", "Hi  there");

@@ -29,18 +29,19 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
             run.Selected = selected.Count;
             logger.LogInformation("Selected {Count} messages older than {Cutoff:yyyy-MM-dd}", selected.Count, options.Selection.Cutoff);
 
-            var consecutiveFailures = 0;
+            // Only unexpected errors count toward the abort; deterministic failures are recorded but the run continues.
+            var errors = new List<string>();
             foreach (var item in selected)
             {
                 ct.ThrowIfCancellationRequested();
-                var ok = await ProcessAsync(item, run, options.Purge, ct);
-                if (ok)
+                var outcome = await ProcessAsync(item, run, options.Purge, errors, ct);
+                if (outcome != ProcessOutcome.Error)
                 {
-                    consecutiveFailures = 0;
+                    errors.Clear();
                 }
-                else if (++consecutiveFailures >= options.MaxConsecutiveFailures)
+                else if (errors.Count >= options.MaxConsecutiveFailures)
                 {
-                    logger.LogError("{Count} consecutive failures, aborting run", consecutiveFailures);
+                    logger.LogError("{Count} consecutive unexpected errors, aborting run: {Errors}", errors.Count, string.Join("; ", errors));
                     aborted = true;
                     break;
                 }
@@ -57,29 +58,53 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
         {
             run.FinishedAt = DateTimeOffset.UtcNow;
             run.ExitCode = exitCode;
-            await ledger.FinishRunAsync(run, CancellationToken.None);
+            try
+            {
+                await ledger.FinishRunAsync(run, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                // Must never replace the original exception (an AuthRequiredException still has to reach exit 3).
+                logger.LogError(ex, "Could not record the run result in the ledger");
+            }
         }
 
         return new RunSummary(run.Selected, run.Copied, run.AlreadyInTarget, run.Verified, run.Trashed, run.Purged, run.Failed, aborted);
     }
 
-    private async Task<bool> ProcessAsync(SelectedMessage item, LedgerRun run, bool purge, CancellationToken ct)
+    private enum ProcessOutcome { Ok, Failed, Error }
+
+    private async Task<ProcessOutcome> ProcessAsync(SelectedMessage item, LedgerRun run, bool purge, List<string> errors, CancellationToken ct)
     {
         var msg = item.Message;
-        var row = await ledger.GetOrCreateAsync(item.Key, msg, run.Id, ct);
+        LedgerMessage row;
+        try
+        {
+            row = await ledger.GetOrCreateAsync(item.Key, msg, run.Id, ct);
+        }
+        catch (AuthRequiredException) { throw; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            // No row exists, so there is nothing to mark Failed.
+            logger.LogError(ex, "UID {Uid}: could not record the message in the ledger", msg.Uid);
+            errors.Add($"UID {msg.Uid}: ledger insert failed: {ex.Message}");
+            run.Failed++;
+            return ProcessOutcome.Error;
+        }
 
         // For a Fallback key the verifier compares exactly the fields the key hashes, so re-verifying a different
         // Gmail UID against an existing copy can never fail. Never reuse such a row; leave the message for manual
         // review. This runs before any mutation so the original row is untouched, even under a tracked ledger.
-        // It returns true so it does not feed the consecutive-failure abort (it recurs every run); run.Failed++
-        // still makes the run exit with code 1.
+        // It is a Failed outcome, not an Error, so it does not feed the consecutive-failure abort (it recurs every run);
+        // run.Failed++ still makes the run exit with code 1.
         if (item.Key.Type == KeyType.Fallback && row.GmailUid is not null && row.GmailUid != msg.Uid)
         {
             logger.LogWarning(
                 "UID {Uid}: duplicate fallback key (same date, sender, subject, no Message-ID) of UID {OldUid} in state {State}; leaving it in Gmail for manual review",
                 msg.Uid, row.GmailUid, row.State);
             run.Failed++;
-            return true;
+            return ProcessOutcome.Failed;
         }
 
         // Rows reused within this run (not Pending) must also look for an existing copy before appending.
@@ -102,6 +127,13 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
                 logger.LogInformation("UID {Uid} resumes Verified row recorded for UID {OldUid}; re-verifying", msg.Uid, row.GmailUid);
                 row.State = MessageState.AlreadyInTarget;
                 run.AlreadyInTarget++;
+                changed = true;
+            }
+            else if (row.State == MessageState.Verified && seenBefore)
+            {
+                // Verified in an earlier run: the target copy may have changed since, so check it again before trashing.
+                logger.LogInformation("UID {Uid}: re-verifying before trash", msg.Uid);
+                row.State = MessageState.AlreadyInTarget;
                 changed = true;
             }
 
@@ -143,9 +175,11 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
                         // An earlier run may have appended without recording it; look before appending again.
                         var found = await WithRetryAsync(() => FindCandidatesAsync(folder, item, ct), ct);
                         var existing = found.Where(c => Verifier.Matches(msg, c)).ToList();
-                        if (existing.Count > 0)
+                        // A row that recorded a copy but lost its UID (null APPENDUID) must never append again just because
+                        // the server re-encoded headers; any candidate counts, and verification below decides.
+                        if (existing.Count > 0 || (row.CopiedAt is not null && found.Count > 0))
                         {
-                            logger.LogInformation("UID {Uid}: already present in target ({Count} copies), skipping append", msg.Uid, existing.Count);
+                            logger.LogInformation("UID {Uid}: already present in target ({Count} candidates), skipping append", msg.Uid, found.Count);
                             row.TargetFolder = folder;
                             row.State = MessageState.AlreadyInTarget;
                             run.AlreadyInTarget++;
@@ -170,10 +204,16 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
             if (row.State is MessageState.AlreadyInTarget or MessageState.Copied)
             {
                 var folder = row.TargetFolder ?? FolderRouter.Route(msg);
-                var candidates = await WithRetryAsync(() => FindCandidatesAsync(folder, item, ct), ct);
+                var candidates = (await WithRetryAsync(() => FindCandidatesAsync(folder, item, ct), ct)).ToList();
+                // The search is the duplicate check, but IMAP indexing can lag a fresh append; fetch the recorded UID directly.
+                if (row.TargetUid is long recordedUid && !candidates.Any(c => c.Uid == (uint)recordedUid))
+                {
+                    var byUid = await WithRetryAsync(() => target.GetByUidAsync(folder, (uint)recordedUid, ct), ct);
+                    if (byUid is not null) candidates.Add(byUid);
+                }
                 var result = Verifier.Verify(msg, candidates);
                 if (!result.Success)
-                    return await FailAsync(row, run, result.Reason!);
+                    return await FailAsync(row, run, result.Reason!, errors, ProcessOutcome.Failed);
 
                 if (result.SizeWarning)
                     logger.LogWarning("UID {Uid}: size differs source={Source} target={Target}", msg.Uid, msg.Size, result.Match!.Size);
@@ -201,7 +241,15 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
             {
                 if (row.TrashUid is long trashUidValue)
                 {
-                    await WithRetryVoidAsync(() => source.PurgeAsync((uint)trashUidValue, ct), ct);
+                    try
+                    {
+                        await WithRetryVoidAsync(() => source.PurgeAsync((uint)trashUidValue, ct), ct);
+                    }
+                    catch (Exception ex) when (IsRetryable(ex, ct))
+                    {
+                        // Deterministic after a successful trash: recorded as a failure but not an abort-worthy error.
+                        return await FailAsync(row, run, ex.Message, errors, ProcessOutcome.Failed, ex);
+                    }
                     row.PurgedAt = DateTimeOffset.UtcNow;
                     row.State = MessageState.Purged;
                     run.Purged++;
@@ -214,13 +262,13 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
             }
 
             logger.LogInformation("UID {Uid} {Date:yyyy-MM-dd} \"{Subject}\" -> {State}", msg.Uid, msg.InternalDate, msg.Subject, row.State);
-            return true;
+            return ProcessOutcome.Ok;
         }
         catch (AuthRequiredException) { throw; }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            return await FailAsync(row, run, ex.Message, ex);
+            return await FailAsync(row, run, ex.Message, errors, ProcessOutcome.Error, ex);
         }
     }
 
@@ -276,7 +324,7 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
     private Task WithRetryVoidAsync(Func<Task> operation, CancellationToken ct) =>
         WithRetryAsync(async () => { await operation(); return true; }, ct);
 
-    private async Task<bool> FailAsync(LedgerMessage row, LedgerRun run, string reason, Exception? exception = null)
+    private async Task<ProcessOutcome> FailAsync(LedgerMessage row, LedgerRun run, string reason, List<string> errors, ProcessOutcome outcome, Exception? exception = null)
     {
         logger.LogError(exception, "UID {Uid} failed: {Reason}", row.GmailUid, reason);
         // A purge failure after a successful trash keeps the Trashed state so the message is not re-processed.
@@ -284,7 +332,8 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
             row.State = MessageState.Failed;
         row.FailureReason = reason;
         run.Failed++;
+        if (outcome == ProcessOutcome.Error) errors.Add($"UID {row.GmailUid}: {reason}");
         await ledger.SaveAsync(row, CancellationToken.None);
-        return false;
+        return outcome;
     }
 }
