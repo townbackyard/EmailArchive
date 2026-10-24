@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/EmailArchive.Cli/EmailArchive.Cli.csproj" />
+    <Project Path="src/EmailArchive.Core/EmailArchive.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/EmailArchive.Tests/EmailArchive.Tests.csproj" />
+  </Folder>
+</Solution>
