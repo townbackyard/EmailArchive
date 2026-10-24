@@ -1,0 +1,20 @@
+# Local configuration with real addresses, IDs, connection strings
+appsettings.local.json
+*.local.json
+
+# Logs and run output
+logs/
+*.log
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+TestResults/
+
+# Secrets that must never be committed
+*.pfx
+*.key
+secrets.json
