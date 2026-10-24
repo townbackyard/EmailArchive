@@ -65,15 +65,15 @@ public sealed class AppHost : IAsyncDisposable
             }
             catch (AuthRequiredException ex)
             {
-                Log.Error(ex.Message);
+                Log.Error("{Message}", ex.Message);
                 return 3;
             }
             catch (ConfigurationException ex)
             {
-                Log.Error(ex.Message);
+                Log.Error("{Message}", ex.Message);
                 return 2;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 Log.Warning("Cancelled");
                 return 2;
@@ -87,6 +87,11 @@ public sealed class AppHost : IAsyncDisposable
         catch (ConfigurationException ex)
         {
             Console.Error.WriteLine(ex.Message);
+            return 2;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine("Startup failed: " + ex.Message);
             return 2;
         }
         finally

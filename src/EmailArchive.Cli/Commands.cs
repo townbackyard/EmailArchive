@@ -1,3 +1,4 @@
+using EmailArchive.Core.Config;
 using EmailArchive.Core.Credentials;
 using EmailArchive.Core.Selection;
 using EmailArchive.Core.Workflows;
@@ -52,7 +53,7 @@ public static class Commands
         Console.WriteLine();
         Console.WriteLine($"Result: {summary}");
         if (!purge && summary.Trashed > 0)
-            Console.WriteLine("Trashed messages stay in Gmail Trash for 30 days (and still count toward storage) unless you empty Trash or rerun with --purge.");
+            Console.WriteLine("Trashed messages stay in Gmail Trash for 30 days and still count toward storage. Empty Trash in Gmail by hand, or pass --purge on future runs to expunge as you go.");
         return summary.ExitCode;
     }
 
@@ -67,6 +68,8 @@ public static class Commands
     public static Task<int> SetGmailCredentialAsync(AppHost host)
     {
         var address = host.Settings.Gmail.Address;
+        if (string.IsNullOrWhiteSpace(address) || address == "you@gmail.com")
+            throw new ConfigurationException("Gmail:Address must be set in appsettings.local.json before storing a password");
         Console.Write($"Enter the Gmail app password for {address} (input hidden): ");
         var password = ReadHidden();
         if (string.IsNullOrWhiteSpace(password))
