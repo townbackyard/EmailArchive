@@ -21,37 +21,61 @@ public sealed class GmailSource(GmailSettings settings, string appPassword, ILog
     private ImapClient? _client;
     private IMailFolder? _allMail;
     private IMailFolder? _trash;
+    private uint? _allMailUidValidity;
+    private uint? _trashUidValidity;
 
     public async Task ConnectAsync(CancellationToken ct)
     {
+        _client = null;
+        _allMail = null;
+        _trash = null;
+
         var client = new ImapClient();
-        await client.ConnectAsync(settings.ImapHost, settings.ImapPort, SecureSocketOptions.SslOnConnect, ct);
-        await client.AuthenticateAsync(settings.Address, appPassword, ct);
+        try
+        {
+            await client.ConnectAsync(settings.ImapHost, settings.ImapPort, SecureSocketOptions.SslOnConnect, ct);
+            await client.AuthenticateAsync(settings.Address, appPassword, ct);
 
-        if (!client.Capabilities.HasFlag(ImapCapabilities.GMailExt1))
-            throw new InvalidOperationException("The IMAP server did not advertise Gmail extensions. Check Gmail:ImapHost.");
+            RequireCapability(client, ImapCapabilities.GMailExt1, "Gmail extensions (X-GM-EXT-1)", "Check Gmail:ImapHost.");
+            RequireCapability(client, ImapCapabilities.Move, "MOVE", "Trashing without MOVE could permanently delete messages.");
+            RequireCapability(client, ImapCapabilities.UidPlus, "UIDPLUS", "Purging by UID needs UIDPLUS.");
 
-        _allMail = client.GetFolder(SpecialFolder.All)
-            ?? throw new InvalidOperationException("Gmail did not expose the All Mail folder. Enable 'Show in IMAP' for All Mail in Gmail label settings.");
-        _trash = client.GetFolder(SpecialFolder.Trash)
-            ?? throw new InvalidOperationException("Gmail did not expose the Trash folder. Enable 'Show in IMAP' for Trash in Gmail label settings.");
+            var allMail = client.GetFolder(SpecialFolder.All)
+                ?? throw new InvalidOperationException("Gmail did not expose the All Mail folder. Enable 'Show in IMAP' for All Mail in Gmail label settings.");
+            var trash = client.GetFolder(SpecialFolder.Trash)
+                ?? throw new InvalidOperationException("Gmail did not expose the Trash folder. Enable 'Show in IMAP' for Trash in Gmail label settings.");
 
-        await _allMail.OpenAsync(FolderAccess.ReadWrite, ct);
-        _client = client;
+            await allMail.OpenAsync(FolderAccess.ReadWrite, ct);
+
+            if (_allMailUidValidity is { } known && known != allMail.UidValidity)
+                throw new InvalidOperationException("Gmail All Mail UIDVALIDITY changed; rerun to list messages again");
+            _allMailUidValidity = allMail.UidValidity;
+
+            _client = client;
+            _allMail = allMail;
+            _trash = trash;
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
+
         logger.LogInformation("Connected to Gmail as {Address}", settings.Address);
     }
 
     public async Task ReconnectAsync(CancellationToken ct)
     {
-        await DisposeAsync();
+        await ShutdownAsync(graceful: false, ct);
         await ConnectAsync(ct);
     }
 
     public async Task<IReadOnlyList<SourceMessageInfo>> ListOlderThanAsync(DateTimeOffset cutoff, CancellationToken ct)
     {
         var folder = AllMail;
-        var uids = await folder.SearchAsync(SearchQuery.DeliveredBefore(cutoff.UtcDateTime), ct);
-        logger.LogInformation("Gmail All Mail: {Count} messages delivered before {Cutoff:yyyy-MM-dd}", uids.Count, cutoff);
+        // Pre-filter only: DeliveredBefore is date-granular, so ask for a superset; MessageSelector makes the exact cut.
+        var uids = await folder.SearchAsync(SearchQuery.DeliveredBefore(cutoff.UtcDateTime.Date.AddDays(1)), ct);
+        logger.LogInformation("Gmail All Mail: {Count} candidate messages delivered before {Cutoff:yyyy-MM-dd}", uids.Count, cutoff);
 
         const MessageSummaryItems items =
             MessageSummaryItems.UniqueId | MessageSummaryItems.InternalDate | MessageSummaryItems.Envelope |
@@ -72,40 +96,62 @@ public sealed class GmailSource(GmailSettings settings, string appPassword, ILog
     public async Task<uint?> TrashAsync(uint uid, CancellationToken ct)
     {
         var moved = await AllMail.MoveToAsync(new UniqueId(uid), Trash, ct);
-        return moved?.Id;
+        if (moved is not { } trashed) return null;
+        _trashUidValidity ??= trashed.Validity;
+        return trashed.Id;
     }
 
     public async Task PurgeAsync(uint trashUid, CancellationToken ct)
     {
         var trash = Trash;
-        await trash.OpenAsync(FolderAccess.ReadWrite, ct);
         try
         {
+            await trash.OpenAsync(FolderAccess.ReadWrite, ct);
+            if (_trashUidValidity is { } known && known != trash.UidValidity)
+                throw new InvalidOperationException("Gmail Trash UIDVALIDITY changed; cannot purge by UID");
+
             var uid = new UniqueId(trashUid);
             await trash.AddFlagsAsync(uid, MessageFlags.Deleted, true, ct);
             await trash.ExpungeAsync(new[] { uid }, ct);
         }
         finally
         {
-            await AllMail.OpenAsync(FolderAccess.ReadWrite, ct);
+            try
+            {
+                await AllMail.OpenAsync(FolderAccess.ReadWrite, ct);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Could not reopen All Mail after purge; the next operation will reconnect");
+            }
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() => ShutdownAsync(graceful: true, CancellationToken.None);
+
+    private async ValueTask ShutdownAsync(bool graceful, CancellationToken ct)
     {
-        if (_client is null) return;
+        var client = _client;
+        _client = null;
+        _allMail = null;
+        _trash = null;
+        if (client is null) return;
         try
         {
-            if (_client.IsConnected) await _client.DisconnectAsync(true);
+            if (client.IsConnected)
+                await client.DisconnectAsync(graceful, ct);
         }
         catch (Exception ex)
         {
             logger.LogDebug(ex, "Ignoring error while disconnecting from Gmail");
         }
-        _client.Dispose();
-        _client = null;
-        _allMail = null;
-        _trash = null;
+        client.Dispose();
+    }
+
+    private static void RequireCapability(ImapClient client, ImapCapabilities capability, string name, string hint)
+    {
+        if (!client.Capabilities.HasFlag(capability))
+            throw new InvalidOperationException($"The IMAP server did not advertise {name}. {hint}");
     }
 
     private IMailFolder AllMail => _allMail ?? throw new InvalidOperationException("Not connected to Gmail");
@@ -116,10 +162,12 @@ public sealed class GmailSource(GmailSettings settings, string appPassword, ILog
         var labels = s.GMailLabels ?? Array.Empty<string>();
         var envelope = s.Envelope;
         var flags = s.Flags ?? MessageFlags.None;
+        var internalDate = s.InternalDate
+            ?? throw new InvalidOperationException($"Gmail did not report INTERNALDATE for UID {s.UniqueId.Id}");
         return new SourceMessageInfo(
             Uid: s.UniqueId.Id,
             MessageId: envelope?.MessageId,
-            InternalDate: s.InternalDate ?? envelope?.Date ?? DateTimeOffset.MinValue,
+            InternalDate: internalDate,
             HeaderDate: envelope?.Date,
             From: envelope?.From?.Mailboxes.FirstOrDefault()?.Address ?? "",
             Subject: envelope?.Subject ?? "",
