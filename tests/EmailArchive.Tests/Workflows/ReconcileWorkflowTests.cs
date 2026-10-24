@@ -41,11 +41,13 @@ public class ReconcileWorkflowTests
         _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 10));
         _ledger.Seed(a, MessageState.Trashed, r => r.TargetUid = 3);
 
-        await Workflow().RunAsync(CancellationToken.None);
+        var summary = await Workflow().RunAsync(CancellationToken.None);
 
         var row = _ledger.Rows[MessageKeyBuilder.For(a).Value];
         Assert.Equal(MessageState.Trashed, row.State);
         Assert.Equal(3, row.TargetUid);
+        Assert.Equal(1, summary.Scanned);
+        Assert.Equal(0, summary.Recorded);
     }
 
     [Fact]

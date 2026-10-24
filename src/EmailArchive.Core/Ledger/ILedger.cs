@@ -14,6 +14,6 @@ public interface ILedger
     Task<LedgerMessage> GetOrCreateAsync(MessageKey key, SourceMessageInfo source, int runId, CancellationToken ct);
     Task SaveAsync(LedgerMessage message, CancellationToken ct);
 
-    /// <summary>Reconcile upsert: records that a message exists in the target folder.</summary>
-    Task RecordTargetAsync(MessageKey key, TargetMessageInfo target, int runId, CancellationToken ct);
+    /// <summary>Reconcile upsert: records that a message exists in the target folder. Returns true when a row was created or upgraded to AlreadyInTarget, false when the existing row was left unchanged.</summary>
+    Task<bool> RecordTargetAsync(MessageKey key, TargetMessageInfo target, int runId, CancellationToken ct);
 }

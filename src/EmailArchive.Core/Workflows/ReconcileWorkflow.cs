@@ -29,8 +29,8 @@ public sealed class ReconcileWorkflow(IMailTarget target, ILedger ledger, ILogge
                 {
                     ct.ThrowIfCancellationRequested();
                     scanned++;
-                    await ledger.RecordTargetAsync(MessageKeyBuilder.For(message), message, run.Id, ct);
-                    recorded++;
+                    if (await ledger.RecordTargetAsync(MessageKeyBuilder.For(message), message, run.Id, ct))
+                        recorded++;
                 }
             }
 

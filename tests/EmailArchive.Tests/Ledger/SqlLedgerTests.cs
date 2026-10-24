@@ -67,12 +67,12 @@ public class SqlLedgerTests
         var t = Target(m, uid: 7);
         var key = MessageKeyBuilder.For(t);
 
-        await ledger.RecordTargetAsync(key, t, run.Id, CancellationToken.None);
+        Assert.True(await ledger.RecordTargetAsync(key, t, run.Id, CancellationToken.None));
         var row = await ledger.FindAsync(key, CancellationToken.None);
         Assert.Equal(MessageState.AlreadyInTarget, row!.State);
         Assert.Equal(7, row.TargetUid);
 
-        await ledger.RecordTargetAsync(key, t with { Uid = 8 }, run.Id, CancellationToken.None);
+        Assert.False(await ledger.RecordTargetAsync(key, t with { Uid = 8 }, run.Id, CancellationToken.None));
         Assert.Equal(7, (await ledger.FindAsync(key, CancellationToken.None))!.TargetUid);
     }
 }

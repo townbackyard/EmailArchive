@@ -48,12 +48,13 @@ public sealed class SqlLedger(EmailArchiveDbContext db) : ILedger
         await db.SaveChangesAsync(ct);
     }
 
-    public async Task RecordTargetAsync(MessageKey key, TargetMessageInfo target, int runId, CancellationToken ct)
+    public async Task<bool> RecordTargetAsync(MessageKey key, TargetMessageInfo target, int runId, CancellationToken ct)
     {
         var existing = await FindAsync(key, ct);
         var row = LedgerRules.ApplyTarget(existing, key, target, runId);
-        if (row is null) return;
+        if (row is null) return false;
         if (existing is null) db.Messages.Add(row);
         await db.SaveChangesAsync(ct);
+        return true;
     }
 }

@@ -86,15 +86,15 @@ public sealed class InMemoryLedger : ILedger
         return Task.CompletedTask;
     }
 
-    public Task RecordTargetAsync(MessageKey key, TargetMessageInfo target, int runId, CancellationToken ct)
+    public Task<bool> RecordTargetAsync(MessageKey key, TargetMessageInfo target, int runId, CancellationToken ct)
     {
         Trace?.Add("ledger.recordTarget");
         var existing = Rows.TryGetValue(key.Value, out var stored) ? Clone(stored) : null;
         var row = LedgerRules.ApplyTarget(existing, key, target, runId);
-        if (row is null) return Task.CompletedTask;
+        if (row is null) return Task.FromResult(false);
         if (row.Id == 0) row.Id = _nextId++;
         Rows[key.Value] = Clone(row);
-        return Task.CompletedTask;
+        return Task.FromResult(true);
     }
 
     /// <summary>Seeds a row as if a previous run left it in the given state.</summary>
