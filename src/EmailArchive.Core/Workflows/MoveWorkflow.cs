@@ -215,6 +215,8 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
                 if (!result.Success)
                     return await FailAsync(row, run, result.Reason!, errors, ProcessOutcome.Failed);
 
+                if (result.MatchCount > 1)
+                    logger.LogWarning("UID {Uid}: {Count} matching copies in target; verified against target UID {TargetUid}", msg.Uid, result.MatchCount, result.Match!.Uid);
                 if (result.SizeWarning)
                     logger.LogWarning("UID {Uid}: size differs source={Source} target={Target}", msg.Uid, msg.Size, result.Match!.Size);
 

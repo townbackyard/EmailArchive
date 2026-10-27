@@ -36,12 +36,22 @@ public class VerifierTests
     }
 
     [Fact]
-    public void Two_matching_copies_fail()
+    public void Two_matching_copies_verify_against_lowest_uid_and_report_count()
     {
         var src = Msg(1, "2010-01-01");
-        var result = Verifier.Verify(src, new[] { Target(src, uid: 1), Target(src, uid: 2) });
-        Assert.False(result.Success);
-        Assert.Equal("2 matching copies in target", result.Reason);
+        var result = Verifier.Verify(src, new[] { Target(src, uid: 7), Target(src, uid: 2) });
+        Assert.True(result.Success);
+        Assert.Equal(2u, result.Match!.Uid);
+        Assert.Equal(2, result.MatchCount);
+    }
+
+    [Fact]
+    public void Single_match_reports_count_of_one()
+    {
+        var src = Msg(1, "2010-01-01");
+        var result = Verifier.Verify(src, new[] { Target(src, uid: 1) });
+        Assert.True(result.Success);
+        Assert.Equal(1, result.MatchCount);
     }
 
     [Fact]

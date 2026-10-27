@@ -23,10 +23,15 @@ of the Microsoft 365 tenant that owns the destination mailbox. No one outside yo
 ## Grant IMAP permission
 
 1. Open **API permissions** and click **Add a permission**.
-2. Choose the **APIs my organization uses** tab and search for `Office 365 Exchange Online`.
-3. Select it, then choose **Delegated permissions**.
-4. Tick **IMAP.AccessAsUser.All** and click **Add permissions**.
-5. Click **Grant admin consent for <your tenant>** and confirm.
+2. On the **Microsoft APIs** tab choose **Microsoft Graph**, then **Delegated permissions**.
+3. Type `IMAP` in the search box, expand the **IMAP** group, tick **IMAP.AccessAsUser.All** and click
+   **Add permissions**.
+4. Click **Grant admin consent for <your tenant>** and confirm.
+
+The permission lives under Microsoft Graph in the portal even though EmailArchive requests it as the
+Exchange scope `https://outlook.office.com/IMAP.AccessAsUser.All`; that is how Microsoft lists it. The
+**Office 365 Exchange Online** API only shows the application-level `IMAP.AccessAsApp` permission, which
+EmailArchive does not use.
 
 The permission list should now show `IMAP.AccessAsUser.All` with a green "Granted" status, alongside
 the default `User.Read`.

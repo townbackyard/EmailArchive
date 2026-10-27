@@ -628,7 +628,7 @@ public class MoveWorkflowTests
     }
 
     [Fact]
-    public async Task Lagging_search_still_detects_prior_duplicate()
+    public async Task Lagging_search_duplicate_still_verifies_and_trashes()
     {
         var m = Msg(1, "2010-01-01");
         _source.Messages.Add(m);
@@ -637,11 +637,32 @@ public class MoveWorkflowTests
 
         var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
 
+        // The lagging search missed the prior copy, so a second copy was appended; the message is
+        // nonetheless archived and must not stay stuck in Gmail.
         Assert.Single(_target.Appended);
-        Assert.Equal(1, summary.Failed);
-        Assert.Equal(0, summary.Trashed);
-        Assert.Empty(_source.Trashed);
-        Assert.Equal("2 matching copies in target", Row(m).FailureReason);
+        Assert.Equal(0, summary.Failed);
+        Assert.Equal(1, summary.Verified);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(MessageState.Trashed, Row(m).State);
+    }
+
+    [Fact]
+    public async Task Two_copies_already_in_target_verify_against_lowest_uid()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 20));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 10));
+        // Reconcile recorded whichever copy it met first; a manual archive attempt left two.
+        _ledger.Seed(m, MessageState.Pending, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 20; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Empty(_target.Appended);
+        Assert.Equal(1, summary.AlreadyInTarget);
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(10L, Row(m).TargetUid);
+        Assert.Equal(MessageState.Trashed, Row(m).State);
     }
 
     [Fact]

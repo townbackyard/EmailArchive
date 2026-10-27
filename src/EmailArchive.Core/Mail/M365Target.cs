@@ -130,6 +130,9 @@ public sealed class M365Target(
         var mailFolder = Resolve(folder);
         await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
         var uids = await mailFolder.SearchAsync(SearchQuery.All, ct);
+        if (uids.Count != mailFolder.Count)
+            logger.LogWarning("{Folder}: server reports {Exists} messages but SEARCH ALL returned {Found}",
+                folder, mailFolder.Count, uids.Count);
         return await SummarizeAsync(mailFolder, folder, uids, ct);
     }
 

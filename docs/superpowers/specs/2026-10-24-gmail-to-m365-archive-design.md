@@ -173,7 +173,10 @@ fields only. The ledger records which key type was used.
 
 ### Failure policy
 
-- A verify failure skips that message only.
+- A verify failure skips that message only. Verification needs at least one copy in
+  the target whose headers match; several matching copies (a manual attempt that
+  copied twice, or a lagging search after our own append) still verify, against the
+  lowest UID, with a warning naming the copy count.
 - A network or IMAP error triggers one reconnect and retry of the current step.
 - Three consecutive message failures abort the run with a non-zero exit code.
   Only unexpected errors (exceptions) count toward the abort; a verification failure,
