@@ -15,6 +15,7 @@ namespace EmailArchive.Core.Dedupe;
 /// <param name="DecodedSize">Size of the decoded content in bytes.</param>
 /// <param name="DecodedHash">SHA-256 of the decoded content; for text parts, of the UTF-8 text.</param>
 /// <param name="NormalizedTextHash">For text parts, SHA-256 of the text with all whitespace removed; null otherwise.</param>
+/// <param name="Decoded">The decoded content itself (UTF-8 for text parts), kept so differences can be shown; null for containers.</param>
 public sealed record PartInfo(
     string Path,
     string ContentType,
@@ -23,7 +24,8 @@ public sealed record PartInfo(
     string Encoding,
     long DecodedSize,
     string? DecodedHash,
-    string? NormalizedTextHash);
+    string? NormalizedTextHash,
+    byte[]? Decoded = null);
 
 /// <summary>
 /// Diagnostic support for the inspect command: describes a message's MIME structure so two stored copies can be
@@ -71,7 +73,15 @@ public static class MessageInspector
             else if (x.NormalizedTextHash is not null && x.NormalizedTextHash == y.NormalizedTextHash)
                 lines.Add($"{label}: text identical ignoring whitespace ({x.DecodedSize} vs {y.DecodedSize} bytes)");
             else
+            {
                 lines.Add($"{label}: decoded content DIFFERS ({x.DecodedSize} vs {y.DecodedSize} bytes)");
+                if (x.Decoded is not null && y.Decoded is not null && FirstDifference(x.Decoded, y.Decoded) is { } diff)
+                {
+                    lines.Add($"  first difference at byte {diff.Offset:N0}:");
+                    lines.Add($"    {diff.Left}");
+                    lines.Add($"    {diff.Right}");
+                }
+            }
         }
         return lines;
     }
@@ -124,7 +134,7 @@ public static class MessageInspector
                 var content = text.Text ?? "";
                 var bytes = Encoding.UTF8.GetBytes(content);
                 var normalized = Encoding.UTF8.GetBytes(Whitespace.Replace(content, ""));
-                parts.Add(new PartInfo(path, entity.ContentType.MimeType, null, text.FileName, encoding, bytes.Length, Hash(bytes), Hash(normalized)));
+                parts.Add(new PartInfo(path, entity.ContentType.MimeType, null, text.FileName, encoding, bytes.Length, Hash(bytes), Hash(normalized), bytes));
                 break;
             }
 
@@ -132,7 +142,8 @@ public static class MessageInspector
             {
                 using var stream = new MemoryStream();
                 part.Content?.DecodeTo(stream);
-                parts.Add(new PartInfo(path, entity.ContentType.MimeType, null, part.FileName, encoding, stream.Length, Hash(stream.ToArray()), null));
+                var bytes = stream.ToArray();
+                parts.Add(new PartInfo(path, entity.ContentType.MimeType, null, part.FileName, encoding, bytes.Length, Hash(bytes), null, bytes));
                 break;
             }
 

@@ -73,6 +73,9 @@ public class MessageInspectorTests
         var lines = MessageInspector.Compare(MessageInspector.Describe(a), MessageInspector.Describe(b));
 
         Assert.Contains(lines, l => l.StartsWith("Part 1 text/plain: decoded content DIFFERS"));
+        Assert.Contains("  first difference at byte 0:", lines);
+        Assert.Contains("    hello\\r\\n", lines);
+        Assert.Contains("    goodbye\\r\\n", lines);
     }
 
     [Fact]
