@@ -157,11 +157,16 @@ any     -> Failed (with reason)
    `[Gmail]/Sent Mail` membership means the Sent folder). Append to M365
    preserving internal date, `\Seen`, and `\Flagged`. Mark `Copied`.
 5. **Verify.** Search the target folder for the Message-ID header. Require
-   exactly one match whose Date, From, and Subject match the source within
-   normalization (whitespace, encoding). Record both sizes; log a warning if
+   at least one match whose Date, From, and Subject match the source within
+   normalization (whitespace, encoding); several matches verify against the
+   lowest UID with a warning. Record both sizes; log a warning if
    they differ by more than 10 percent, but do not fail on size alone because
    Exchange re-encodes MIME on storage. On success mark `Verified`; on failure
    mark `Failed` and leave Gmail untouched.
+   With `--dedupe`, extra matching copies whose body (everything below the
+   header block) is byte-identical to the survivor are moved to Deleted Items
+   in the target mailbox before step 6. A removal failure is logged and the
+   message still proceeds, since it is verified either way.
 6. **Trash.** Move the Gmail message to `[Gmail]/Trash`. Mark `Trashed`.
 7. **Purge.** Only if `--purge`: expunge from Trash. Mark `Purged`.
 
@@ -190,7 +195,8 @@ fields only. The ledger records which key type was used.
 ```
 EmailArchive report      [--keep-years N] [--max-messages N] [--max-bytes N]
 EmailArchive reconcile
-EmailArchive move        [--keep-years N] [--max-messages N] [--max-bytes N] [--purge]
+EmailArchive move        [--keep-years N] [--max-messages N] [--max-bytes N] [--purge] [--dedupe]
+EmailArchive dedupe      [--apply]
 EmailArchive credentials set-gmail | clear
 EmailArchive login       (interactive Microsoft sign-in, refreshes token cache)
 ```
@@ -200,6 +206,11 @@ EmailArchive login       (interactive Microsoft sign-in, refreshes token cache)
 - `reconcile`: reads target folders only. Upserts ledger rows as
   `AlreadyInTarget` with target UID and size. Never touches Gmail.
 - `move`: the pipeline above.
+- `dedupe`: reads target folders only. Groups messages by Message-ID; within a
+  group, copies whose Date, From and Subject match the survivor (the ledger's
+  TargetUid if it is in the group, else the lowest UID) and whose body hash
+  equals the survivor's are moved to Deleted Items. Dry run unless `--apply`.
+  Messages without a Message-ID are never grouped. Never touches Gmail.
 - Exit codes: 0 success, 1 partial (some failures), 2 aborted, 3 auth required.
 
 When the Microsoft token cannot be refreshed silently, every mode exits with
@@ -231,10 +242,11 @@ modified.
 | Column | Notes |
 |---|---|
 | Id | PK |
-| Mode | report / reconcile / move |
+| Mode | report / reconcile / move / dedupe |
 | StartedAt, FinishedAt | |
 | CutoffDate | computed from KeepYears |
 | Selected, Copied, AlreadyInTarget, Verified, Trashed, Purged, Failed | counts |
+| DuplicatesRemoved | target copies moved to Deleted Items (or that would be, in a dedupe dry run) |
 | ExitCode | |
 
 Schema is created by EF Core migrations; `dotnet ef database update` or the
@@ -246,8 +258,13 @@ Unit tests, no network:
 - `MessageSelector`: cutoff boundary, oldest-first ordering, both caps,
   exclusion of ledger-completed rows.
 - `FolderRouter`: Sent detection from labels and flags.
-- `Verifier`: exact match, normalization cases, duplicate match rejection,
-  size warning threshold, fallback key matching.
+- `Verifier`: exact match, normalization cases, duplicate copies verify
+  against the lowest UID, size warning threshold, fallback key matching.
+- `DuplicatePlan` / `DuplicateRemover`: survivor selection (ledger UID, else
+  lowest), header mismatches excluded, body-hash mismatch kept, dry run moves
+  nothing, removal failures counted.
+- `DedupeWorkflow`: grouping by Message-ID, both folders, ledger-referenced
+  survivor, no-Message-ID messages ignored, exit codes.
 - `MoveWorkflow`: every state transition with fake source/target/ledger,
   including crash-resume from each intermediate state and the three-failure
   abort.

@@ -115,5 +115,31 @@ public sealed class FakeTarget : IMailTarget
         return Task.FromResult<IReadOnlyList<TargetMessageInfo>>(Folders[folder].ToList());
     }
 
+    /// <summary>Body hash overrides by UID; copies without an override hash to their Message-ID, so same-ID copies are identical by default.</summary>
+    public Dictionary<uint, string> Bodies { get; } = new();
+    /// <summary>Messages moved to Deleted Items, in order.</summary>
+    public List<(TargetFolder Folder, uint Uid)> DeletedItems { get; } = new();
+    public Exception? BodyHashFailure { get; set; }
+    public Exception? MoveToDeletedFailure { get; set; }
+
+    public Task<string?> GetBodyHashAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        Trace?.Add($"target.bodyHash:{uid}");
+        if (BodyHashFailure is not null) throw BodyHashFailure;
+        var info = Folders[folder].FirstOrDefault(m => m.Uid == uid);
+        if (info is null) return Task.FromResult<string?>(null);
+        return Task.FromResult<string?>(Bodies.TryGetValue(uid, out var body) ? body : $"body:{info.MessageId}");
+    }
+
+    public Task MoveToDeletedItemsAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        Trace?.Add($"target.moveToDeleted:{uid}");
+        if (MoveToDeletedFailure is not null) throw MoveToDeletedFailure;
+        var removed = Folders[folder].RemoveAll(m => m.Uid == uid);
+        if (removed == 0) throw new InvalidOperationException($"UID {uid} not in {folder}");
+        DeletedItems.Add((folder, uid));
+        return Task.CompletedTask;
+    }
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

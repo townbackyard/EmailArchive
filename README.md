@@ -21,9 +21,19 @@ window (default 5 years) without paying for extra Google storage.
     EmailArchive move --max-messages 20      # first supervised batch
     EmailArchive move                        # full backlog; trashed messages stay in Gmail Trash 30 days unless you empty it or use --purge
     EmailArchive move --purge                # same, and expunge from Trash immediately
+    EmailArchive move --dedupe               # also remove identical extra copies met during verification
+    EmailArchive dedupe                      # dry run: find messages stored more than once in the target folders
+    EmailArchive dedupe --apply              # move the identical extras to Deleted Items in Microsoft 365
     EmailArchive login                       # redo the Microsoft sign-in (exit code 3 asks for this)
 
 Options for `report` and `move`: `--keep-years N`, `--max-messages N`, `--max-bytes N`.
+
+Duplicates: an earlier manual archive attempt can leave the same message in the target folder twice. Two
+copies count as duplicates only when they share a Message-ID, match on Date, From and Subject, and have
+byte-identical bodies below the header block. The copy the ledger points at survives (otherwise the lowest
+UID); extras go to Deleted Items in Microsoft 365, never straight to expunge. `move --dedupe` handles the
+duplicates it meets while verifying; `dedupe` scans the whole target folder, which also covers messages
+that are no longer in Gmail. Neither touches Gmail.
 
 `--max-bytes` is a soft cap: the first selected message always moves even if it is larger, so every run makes progress.
 
@@ -53,7 +63,8 @@ of the free tools do that per message, oldest first, on a schedule.
   verify by Message-ID, then move the Gmail copy to Trash. A local SQL Server
   ledger records every step so runs are resumable and auditable.
 - Modes: `report` (dry run), `reconcile` (index what is already in the target),
-  `move` (the real thing, with per-run caps and an optional `--purge`).
+  `move` (the real thing, with per-run caps and optional `--purge` and `--dedupe`),
+  `dedupe` (remove identical duplicate copies from the target folders).
 
 ## Configuration and privacy
 

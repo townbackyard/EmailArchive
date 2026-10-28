@@ -16,5 +16,7 @@ public sealed class LedgerRun
     public int Trashed { get; set; }
     public int Purged { get; set; }
     public int Failed { get; set; }
+    /// <summary>Duplicate target copies moved to Deleted Items (move --dedupe and dedupe --apply), or that would have been (dedupe dry run).</summary>
+    public int DuplicatesRemoved { get; set; }
     public int? ExitCode { get; set; }
 }

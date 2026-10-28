@@ -27,6 +27,7 @@ public sealed class M365Target(
     private ImapClient? _client;
     private IMailFolder? _archive;
     private IMailFolder? _sent;
+    private IMailFolder? _deletedItems;
 
     public async Task ConnectAsync(CancellationToken ct)
     {
@@ -136,6 +137,51 @@ public sealed class M365Target(
         return await SummarizeAsync(mailFolder, folder, uids, ct);
     }
 
+    public async Task<string?> GetBodyHashAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        var mailFolder = Resolve(folder);
+        await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
+        try
+        {
+            // BODY[TEXT] is everything after the header block: Exchange stamps each stored copy with its own
+            // headers, so the body is the part that can be compared byte for byte.
+            using var stream = await mailFolder.GetStreamAsync(new UniqueId(uid), "TEXT", ct);
+            var hash = await System.Security.Cryptography.SHA256.HashDataAsync(stream, ct);
+            return Convert.ToHexString(hash);
+        }
+        catch (MessageNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    public async Task MoveToDeletedItemsAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        _deletedItems ??= await FindDeletedItemsAsync(ct);
+        var mailFolder = Resolve(folder);
+        await mailFolder.OpenAsync(FolderAccess.ReadWrite, ct);
+        await mailFolder.MoveToAsync(new[] { new UniqueId(uid) }, _deletedItems, ct);
+    }
+
+    private async Task<IMailFolder> FindDeletedItemsAsync(CancellationToken ct)
+    {
+        var client = _client ?? throw new InvalidOperationException("Not connected to Microsoft 365");
+
+        // Exchange Online advertises neither SPECIAL-USE nor XLIST, and MailKit throws NotSupportedException from
+        // GetFolder(SpecialFolder) in that case, so only ask when the server can answer.
+        if ((client.Capabilities & (ImapCapabilities.SpecialUse | ImapCapabilities.XList)) != 0
+            && client.GetFolder(SpecialFolder.Trash) is { } special)
+            return special;
+
+        var root = client.GetFolder(client.PersonalNamespaces[0]) ?? throw new InvalidOperationException("Microsoft 365 did not expose its personal IMAP namespace root");
+        var subfolders = await root.GetSubfoldersAsync(subscribedOnly: false, ct);
+        var deleted = subfolders.FirstOrDefault(f => f.Attributes.HasFlag(FolderAttributes.Trash))
+            ?? subfolders.FirstOrDefault(f => string.Equals(f.Name, "Deleted Items", StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidOperationException("Could not find the Deleted Items folder in Microsoft 365");
+        logger.LogDebug("Using {Folder} as Deleted Items", deleted.FullName);
+        return deleted;
+    }
+
     public ValueTask DisposeAsync() => ShutdownAsync(graceful: true, CancellationToken.None);
 
     private async ValueTask ShutdownAsync(bool graceful, CancellationToken ct)
@@ -144,6 +190,7 @@ public sealed class M365Target(
         _client = null;
         _archive = null;
         _sent = null;
+        _deletedItems = null;
         if (client is null) return;
         try
         {

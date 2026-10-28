@@ -125,6 +125,9 @@ namespace EmailArchive.Core.Ledger.Migrations
                     b.Property<DateTimeOffset?>("CutoffDate")
                         .HasColumnType("datetimeoffset");
 
+                    b.Property<int>("DuplicatesRemoved")
+                        .HasColumnType("int");
+
                     b.Property<int?>("ExitCode")
                         .HasColumnType("int");
 

@@ -6,4 +6,4 @@ public enum MessageState { Pending, AlreadyInTarget, Copied, Verified, Trashed, 
 
 public enum TargetFolder { Archive, Sent }
 
-public enum RunMode { Report, Reconcile, Move }
+public enum RunMode { Report, Reconcile, Move, Dedupe }
