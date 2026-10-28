@@ -45,6 +45,7 @@ public sealed class DedupeWorkflow(IMailTarget target, ILedger ledger, ILogger<D
                     .ToList();
                 logger.LogInformation("{Folder}: {Count} messages, {Groups} Message-IDs stored more than once", folder, messages.Count, duplicated.Count);
 
+                var checkedInFolder = 0;
                 foreach (var group in duplicated)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -54,20 +55,26 @@ public sealed class DedupeWorkflow(IMailTarget target, ILedger ledger, ILogger<D
                     if (plan is null)
                     {
                         logger.LogWarning("{Folder}: Message-ID {MessageId} appears {Count} times but the copies' headers differ; keeping all", folder, group.Key, group.Count());
-                        continue;
+                    }
+                    else
+                    {
+                        groups++;
+                        var outcome = await remover.ApplyAsync(plan, apply, ct);
+                        removed += outcome.Removed;
+                        differ += outcome.BodiesDiffer;
+                        failed += outcome.Failed;
+                        if (outcome.Failed > 0)
+                        {
+                            // A failure is most often a dropped IMAP connection; reconnect so one drop costs one group, not the rest of the run.
+                            logger.LogInformation("Reconnecting to Microsoft 365 after a failed group");
+                            await target.ReconnectAsync(ct);
+                        }
                     }
 
-                    groups++;
-                    var outcome = await remover.ApplyAsync(plan, apply, ct);
-                    removed += outcome.Removed;
-                    differ += outcome.BodiesDiffer;
-                    failed += outcome.Failed;
-                    if (outcome.Failed > 0)
-                    {
-                        // A failure is most often a dropped IMAP connection; reconnect so one drop costs one group, not the rest of the run.
-                        logger.LogInformation("Reconnecting to Microsoft 365 after a failed group");
-                        await target.ReconnectAsync(ct);
-                    }
+                    checkedInFolder++;
+                    if (checkedInFolder % 50 == 0 || checkedInFolder == duplicated.Count)
+                        logger.LogInformation("{Folder}: checked {Checked}/{Total} duplicate groups so far: {Removed} {Verb}, {Differ} kept (body differs), {Failed} failed",
+                            folder, checkedInFolder, duplicated.Count, removed, apply ? "moved" : "would move", differ, failed);
                 }
             }
 
