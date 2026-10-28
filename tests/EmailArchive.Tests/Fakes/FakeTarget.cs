@@ -141,5 +141,11 @@ public sealed class FakeTarget : IMailTarget
         return Task.CompletedTask;
     }
 
+    public Task<MimeMessage?> DownloadAsync(TargetFolder folder, uint uid, CancellationToken ct) =>
+        throw new NotSupportedException("The inspect command is diagnostic only and is not exercised through the fake");
+
+    public Task<byte[]?> GetBodyBytesAsync(TargetFolder folder, uint uid, CancellationToken ct) =>
+        throw new NotSupportedException("The inspect command is diagnostic only and is not exercised through the fake");
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

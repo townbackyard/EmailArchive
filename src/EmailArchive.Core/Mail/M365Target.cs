@@ -156,6 +156,38 @@ public sealed class M365Target(
         }
     }
 
+    public async Task<MimeMessage?> DownloadAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        var mailFolder = Resolve(folder);
+        await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
+        try
+        {
+            // MailKit fetches with BODY.PEEK, so the \Seen flag is left as it was.
+            return await mailFolder.GetMessageAsync(new UniqueId(uid), ct);
+        }
+        catch (MessageNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    public async Task<byte[]?> GetBodyBytesAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        var mailFolder = Resolve(folder);
+        await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
+        try
+        {
+            using var stream = await mailFolder.GetStreamAsync(new UniqueId(uid), "TEXT", ct);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+            return buffer.ToArray();
+        }
+        catch (MessageNotFoundException)
+        {
+            return null;
+        }
+    }
+
     public async Task MoveToDeletedItemsAsync(TargetFolder folder, uint uid, CancellationToken ct)
     {
         _deletedItems ??= await FindDeletedItemsAsync(ct);

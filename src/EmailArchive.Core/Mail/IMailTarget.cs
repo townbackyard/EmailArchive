@@ -18,4 +18,8 @@ public interface IMailTarget : IAsyncDisposable
     Task<string?> GetBodyHashAsync(TargetFolder folder, uint uid, CancellationToken ct);
     /// <summary>Moves one message to the mailbox's Deleted Items folder. Never expunges.</summary>
     Task MoveToDeletedItemsAsync(TargetFolder folder, uint uid, CancellationToken ct);
+    /// <summary>Downloads one full message (headers and body) without marking it read; null when the UID does not exist.</summary>
+    Task<MimeMessage?> DownloadAsync(TargetFolder folder, uint uid, CancellationToken ct);
+    /// <summary>The raw bytes after the header block (IMAP BODY[TEXT]) without marking the message read; null when the UID does not exist.</summary>
+    Task<byte[]?> GetBodyBytesAsync(TargetFolder folder, uint uid, CancellationToken ct);
 }
