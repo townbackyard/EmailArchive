@@ -163,13 +163,18 @@ any     -> Failed (with reason)
    they differ by more than 10 percent, but do not fail on size alone because
    Exchange re-encodes MIME on storage. On success mark `Verified`; on failure
    mark `Failed` and leave Gmail untouched.
-   With `--dedupe`, extra matching copies whose decoded content (MIME part
-   tree, text, attachments) equals the survivor's, or that have no content at
-   all, are moved to Deleted Items in the target mailbox before step 6. Raw
-   bytes are never compared: Exchange gives each stored copy its own boundaries
-   and Content-ID headers. An empty copy never survives when a copy with
-   content exists. A removal failure is logged and the message still proceeds,
-   since it is verified either way.
+   With `--dedupe`, the matching copy with the most content survives (ties go
+   to the ledger's copy, else the lowest UID) and every other matching copy
+   that adds nothing to it is moved to Deleted Items in the target mailbox
+   before step 6. A copy adds nothing when each of its leaf parts (text, HTML,
+   each attachment) also appears in the survivor; text parts are compared with
+   whitespace and links removed, attachments byte for byte. Raw bytes are never
+   compared: Exchange gives each stored copy its own boundaries and Content-ID
+   headers, Outlook re-wraps text and drops the text/plain alternative when it
+   stores a message, and senders put a fresh tracking token in every link of
+   every delivery. An empty copy never survives when a copy with content
+   exists. A removal failure is logged and the message still proceeds, since it
+   is verified either way.
 6. **Trash.** Move the Gmail message to `[Gmail]/Trash`. Mark `Trashed`.
 7. **Purge.** Only if `--purge`: expunge from Trash. Mark `Purged`.
 
@@ -210,10 +215,11 @@ EmailArchive login       (interactive Microsoft sign-in, refreshes token cache)
   `AlreadyInTarget` with target UID and size. Never touches Gmail.
 - `move`: the pipeline above.
 - `dedupe`: reads target folders only. Groups messages by Message-ID; within a
-  group, copies whose Date, From and Subject match the survivor (the ledger's
-  TargetUid if it is in the group, else the lowest UID) and whose body hash
-  equals the survivor's are moved to Deleted Items. Dry run unless `--apply`.
-  Messages without a Message-ID are never grouped. Never touches Gmail.
+  group, copies whose Date, From and Subject match are compared by content as
+  in step 5: the copy with the most content survives and each copy that adds
+  nothing to it is moved to Deleted Items. If the ledger pointed at a copy that
+  was replaced, the row is repointed. Dry run unless `--apply`. Messages
+  without a Message-ID are never grouped. Never touches Gmail.
 - Exit codes: 0 success, 1 partial (some failures), 2 aborted, 3 auth required.
 
 When the Microsoft token cannot be refreshed silently, every mode exits with

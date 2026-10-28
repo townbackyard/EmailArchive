@@ -1,3 +1,4 @@
+using EmailArchive.Core.Dedupe;
 using EmailArchive.Core.Mail;
 using EmailArchive.Core.Model;
 using MimeKit;
@@ -122,7 +123,10 @@ public sealed class FakeTarget : IMailTarget
     public Exception? ContentFailure { get; set; }
     public Exception? MoveToDeletedFailure { get; set; }
 
-    /// <summary>The fake's "decoded content" is the Bodies string itself; an empty string models a copy whose upload left nothing.</summary>
+    /// <summary>
+    /// The fake's "decoded content" is the Bodies string itself, split on ';' into one leaf part per piece; an empty
+    /// string models a copy whose upload left nothing. Parts are keyed like the real inspector: links and whitespace removed.
+    /// </summary>
     public Task<ContentSummary?> GetContentAsync(TargetFolder folder, uint uid, CancellationToken ct)
     {
         Trace?.Add($"target.content:{uid}");
@@ -130,8 +134,8 @@ public sealed class FakeTarget : IMailTarget
         var info = Folders[folder].FirstOrDefault(m => m.Uid == uid);
         if (info is null) return Task.FromResult<ContentSummary?>(null);
         var body = Bodies.TryGetValue(uid, out var b) ? b : $"body:{info.MessageId}";
-        var normalized = System.Text.RegularExpressions.Regex.Replace(body, @"\s+", "");
-        return Task.FromResult<ContentSummary?>(new ContentSummary(body, normalized, body.Length));
+        var parts = body.Split(';').Select(MessageInspector.NormalizeText).Order(StringComparer.Ordinal).ToList();
+        return Task.FromResult<ContentSummary?>(new ContentSummary(body, parts, body.Length));
     }
 
     public Task MoveToDeletedItemsAsync(TargetFolder folder, uint uid, CancellationToken ct)

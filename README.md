@@ -29,14 +29,18 @@ window (default 5 years) without paying for extra Google storage.
 Options for `report` and `move`: `--keep-years N`, `--max-messages N`, `--max-bytes N`.
 
 Duplicates: an earlier manual archive attempt can leave the same message in the target folder twice. Two
-copies count as duplicates only when they share a Message-ID, match on Date, From and Subject, and carry
-identical decoded content: the same MIME part tree with the same text and the same attachments. Raw bytes
-are not compared because Exchange gives every stored copy its own part boundaries and Content-ID headers.
-A copy with no content at all (a failed upload) is removed whenever a copy with content exists. Otherwise
-the copy the ledger points at survives (else the lowest UID); extras go to Deleted Items in Microsoft 365,
-never straight to expunge. `move --dedupe` handles the duplicates it meets while verifying; `dedupe` scans
-the whole target folder, which also covers messages that are no longer in Gmail. Neither touches Gmail.
-`inspect <uid-a> <uid-b>` is a read-only diagnostic that shows how two copies differ.
+copies are grouped when they share a Message-ID and match on Date, From and Subject. Within a group the
+copy with the most content survives (ties go to the copy the ledger points at, else the lowest UID), and
+another copy is removed only when it adds nothing to the survivor: every part of it (text, HTML, each
+attachment) also appears in the survivor. Text is compared with whitespace and links removed, because
+Outlook re-wraps text when it stores a message and senders put a fresh tracking token in every link of
+every delivery. Attachments are compared byte for byte. Raw bytes are never compared because Exchange
+gives every stored copy its own part boundaries and Content-ID headers. This rule also covers a copy with
+no content at all (a failed upload) and a copy that lost its text/plain alternative on the way through
+Outlook. Extras go to Deleted Items in Microsoft 365, never straight to expunge. `move --dedupe` handles
+the duplicates it meets while verifying; `dedupe` scans the whole target folder, which also covers messages
+that are no longer in Gmail. Neither touches Gmail. `inspect <uid-a> <uid-b>` is a read-only diagnostic
+that shows how two copies differ.
 
 `--max-bytes` is a soft cap: the first selected message always moves even if it is larger, so every run makes progress.
 

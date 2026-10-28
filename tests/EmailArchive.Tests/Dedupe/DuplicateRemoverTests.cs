@@ -18,9 +18,9 @@ public class DuplicateRemoverTests
         return DuplicatePlan.Create(_target.Folders[TargetFolder.Archive].ToList(), null)!;
     }
 
-    private static void AssertCounts(DedupeOutcome outcome, int removed, int differ, int whitespace, int failed)
+    private static void AssertCounts(DedupeOutcome outcome, int removed, int differ, int equivalent, int failed)
     {
-        Assert.Equal((removed, differ, whitespace, failed), (outcome.Removed, outcome.ContentDiffers, outcome.WhitespaceOnly, outcome.Failed));
+        Assert.Equal((removed, differ, equivalent, failed), (outcome.Removed, outcome.ContentDiffers, outcome.Equivalent, outcome.Failed));
     }
 
     [Fact]
@@ -61,7 +61,7 @@ public class DuplicateRemoverTests
     }
 
     [Fact]
-    public async Task Extra_differing_only_in_whitespace_is_kept_and_counted_separately()
+    public async Task Extra_differing_only_in_whitespace_is_removed_as_equivalent()
     {
         var plan = TwoCopies(Msg(1, "2010-01-01"));
         _target.Bodies[1] = "hello world";
@@ -69,8 +69,94 @@ public class DuplicateRemoverTests
 
         var outcome = await Remover().ApplyAsync(plan, apply: true, CancellationToken.None);
 
-        AssertCounts(outcome, 0, 1, 1, 0);
+        AssertCounts(outcome, 1, 0, 1, 0);
+        Assert.Equal(1u, outcome.Kept.Uid);
+        Assert.Equal(new[] { (TargetFolder.Archive, 2u) }, _target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Extra_differing_only_in_link_tokens_is_removed_as_equivalent()
+    {
+        var plan = TwoCopies(Msg(1, "2010-01-01"));
+        _target.Bodies[1] = "see https://example.com/n?mid=aaa&x=1 now";
+        _target.Bodies[2] = "see https://example.com/n?mid=bbb&x=1 now";
+
+        var outcome = await Remover().ApplyAsync(plan, apply: true, CancellationToken.None);
+
+        AssertCounts(outcome, 1, 0, 1, 0);
+        Assert.Equal(new[] { (TargetFolder.Archive, 2u) }, _target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Text_outside_links_still_counts_as_a_difference()
+    {
+        var plan = TwoCopies(Msg(1, "2010-01-01"));
+        _target.Bodies[1] = "see https://example.com/n?mid=aaa now";
+        _target.Bodies[2] = "see https://example.com/n?mid=aaa later";
+
+        var outcome = await Remover().ApplyAsync(plan, apply: true, CancellationToken.None);
+
+        AssertCounts(outcome, 0, 1, 0, 0);
         Assert.Empty(_target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Extra_missing_a_part_the_survivor_has_is_removed_as_partial()
+    {
+        var plan = TwoCopies(Msg(1, "2010-01-01"));
+        _target.Bodies[1] = "plain text;<p>html</p>";
+        _target.Bodies[2] = "<p>html</p>";
+
+        var outcome = await Remover().ApplyAsync(plan, apply: true, CancellationToken.None);
+
+        AssertCounts(outcome, 1, 0, 1, 0);
+        Assert.Equal(1u, outcome.Kept.Uid);
+        Assert.Equal(new[] { (TargetFolder.Archive, 2u) }, _target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Planned_survivor_missing_a_part_gives_way_to_the_fuller_copy()
+    {
+        var plan = TwoCopies(Msg(1, "2010-01-01"));
+        _target.Bodies[1] = "<p>html</p>";
+        _target.Bodies[2] = "plain text;<p>html</p>";
+
+        var outcome = await Remover().ApplyAsync(plan, apply: true, CancellationToken.None);
+
+        AssertCounts(outcome, 1, 0, 1, 0);
+        Assert.Equal(2u, outcome.Kept.Uid);
+        Assert.Equal(new[] { (TargetFolder.Archive, 1u) }, _target.DeletedItems);
+        Assert.Equal(2u, Assert.Single(_target.Folders[TargetFolder.Archive]).Uid);
+    }
+
+    [Fact]
+    public async Task Extra_with_a_part_the_survivor_lacks_and_one_it_does_not_share_is_kept()
+    {
+        var plan = TwoCopies(Msg(1, "2010-01-01"));
+        _target.Bodies[1] = "plain text;<p>html</p>";
+        _target.Bodies[2] = "<p>other html</p>;attachment";
+
+        var outcome = await Remover().ApplyAsync(plan, apply: true, CancellationToken.None);
+
+        AssertCounts(outcome, 0, 1, 0, 0);
+        Assert.Equal(1u, outcome.Kept.Uid);
+        Assert.Empty(_target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Planned_survivor_keeps_its_place_among_copies_with_the_same_part_count()
+    {
+        var m = Msg(1, "2010-01-01");
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 1));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 2));
+        _target.Bodies[1] = "plain;html";
+        _target.Bodies[2] = "plain;html";
+        var plan = DuplicatePlan.Create(_target.Folders[TargetFolder.Archive].ToList(), ledgerUid: 2)!;
+
+        var outcome = await Remover().ApplyAsync(plan, apply: true, CancellationToken.None);
+
+        Assert.Equal(2u, outcome.Kept.Uid);
+        Assert.Equal(new[] { (TargetFolder.Archive, 1u) }, _target.DeletedItems);
     }
 
     [Fact]

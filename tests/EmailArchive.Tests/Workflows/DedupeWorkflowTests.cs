@@ -190,7 +190,7 @@ public class DedupeWorkflowTests
     }
 
     [Fact]
-    public async Task Whitespace_only_differences_are_reported_separately()
+    public async Task Equivalent_copies_are_removed_and_counted_separately()
     {
         var a = Msg(1, "2010-01-01");
         _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 10));
@@ -200,7 +200,23 @@ public class DedupeWorkflowTests
 
         var summary = await Workflow().RunAsync(apply: true, CancellationToken.None);
 
-        Assert.Equal(new DedupeSummary(1, 0, 1, 0, true, WhitespaceOnly: 1), summary);
-        Assert.Empty(_target.DeletedItems);
+        Assert.Equal(new DedupeSummary(1, 1, 0, 0, true, Equivalent: 1), summary);
+        Assert.Equal(new[] { (TargetFolder.Archive, 11u) }, _target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Ledger_is_repointed_when_the_fuller_copy_replaces_its_partial_one()
+    {
+        var a = Msg(1, "2010-01-01");
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 11));
+        _target.Bodies[10] = "html";
+        _target.Bodies[11] = "plain;html";
+        var row = _ledger.Seed(a, MessageState.Trashed, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+
+        await Workflow().RunAsync(apply: true, CancellationToken.None);
+
+        Assert.Equal(new[] { (TargetFolder.Archive, 10u) }, _target.DeletedItems);
+        Assert.Equal(11, _ledger.Rows[row.Key].TargetUid);
     }
 }

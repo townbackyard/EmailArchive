@@ -106,4 +106,55 @@ public class MessageInspectorTests
         var b = Encoding.ASCII.GetBytes("same plus");
         Assert.Equal(4, MessageInspector.FirstDifference(a, b)!.Value.Offset);
     }
+
+    [Fact]
+    public void Normalize_removes_links_and_whitespace_but_keeps_the_words()
+    {
+        var text = "Open https://example.com/x?mid=123&y=2 then\r\n  <a href=\"http://t.co/abc\">click</a>";
+
+        Assert.Equal("Openthen<ahref=\"\">click</a>", MessageInspector.NormalizeText(text));
+    }
+
+    [Fact]
+    public void Bare_html_copy_is_subsumed_by_the_multipart_original()
+    {
+        var original = Parse(
+            "Content-Type: multipart/alternative; boundary=B1\r\n\r\n" +
+            "--B1\r\nContent-Type: text/plain\r\n\r\nhello world\r\n" +
+            "--B1\r\nContent-Type: text/html\r\n\r\n<p>hello\r\n world</p>\r\n--B1--\r\n");
+        var outlook = Parse("Content-Type: text/html\r\n\r\n<p>hello world</p>\r\n");
+
+        var a = MessageInspector.Summarize(original);
+        var b = MessageInspector.Summarize(outlook);
+
+        Assert.Equal(new[] { "text/html", "text/plain" }, a.Parts.Select(p => p.Split('|')[0]));
+        Assert.True(b.IsSubsumedBy(a));
+        Assert.False(a.IsSubsumedBy(b));
+        Assert.False(a.IsEquivalentTo(b));
+        Assert.NotEqual(a.Fingerprint, b.Fingerprint);
+    }
+
+    [Fact]
+    public void Copies_differing_only_in_link_tokens_are_equivalent()
+    {
+        var a = MessageInspector.Summarize(Parse("Content-Type: text/plain\r\n\r\nsee https://x.com/?mid=aaa now\r\n"));
+        var b = MessageInspector.Summarize(Parse("Content-Type: text/plain\r\n\r\nsee https://x.com/?mid=bbb now\r\n"));
+
+        Assert.True(a.IsEquivalentTo(b));
+        Assert.NotEqual(a.Fingerprint, b.Fingerprint);
+    }
+
+    [Fact]
+    public void Attachments_must_match_byte_for_byte()
+    {
+        string Raw(string payload) =>
+            "Content-Type: multipart/mixed; boundary=B1\r\n\r\n" +
+            "--B1\r\nContent-Type: text/plain\r\n\r\nhi\r\n" +
+            $"--B1\r\nContent-Type: application/pdf; name=f.pdf\r\nContent-Transfer-Encoding: base64\r\n\r\n{payload}\r\n--B1--\r\n";
+        var a = MessageInspector.Summarize(Parse(Raw("aGVsbG8=")));
+        var b = MessageInspector.Summarize(Parse(Raw("aGVsbG8h")));
+
+        Assert.False(a.IsEquivalentTo(b));
+        Assert.False(a.IsSubsumedBy(b));
+    }
 }

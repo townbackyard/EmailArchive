@@ -34,6 +34,14 @@ public sealed record PartInfo(
 public static class MessageInspector
 {
     private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
+    private static readonly Regex Link = new(@"https?://[^\s""'<>()]+", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    /// <summary>
+    /// Text as it reads, not as it was serialized: links and whitespace removed. Outlook re-wraps text when it stores a
+    /// message, and mail senders put a fresh tracking token in every link of every delivery, so neither can tell two
+    /// copies of the same message apart.
+    /// </summary>
+    public static string NormalizeText(string text) => Whitespace.Replace(Link.Replace(text, ""), "");
 
     public static IReadOnlyList<PartInfo> Describe(MimeMessage message)
     {
@@ -71,7 +79,7 @@ public static class MessageInspector
             if (x.DecodedHash == y.DecodedHash)
                 lines.Add($"{label}: decoded content identical");
             else if (x.NormalizedTextHash is not null && x.NormalizedTextHash == y.NormalizedTextHash)
-                lines.Add($"{label}: text identical ignoring whitespace ({x.DecodedSize} vs {y.DecodedSize} bytes)");
+                lines.Add($"{label}: text identical ignoring whitespace and links ({x.DecodedSize} vs {y.DecodedSize} bytes)");
             else
             {
                 lines.Add($"{label}: decoded content DIFFERS ({x.DecodedSize} vs {y.DecodedSize} bytes)");
@@ -133,7 +141,7 @@ public static class MessageInspector
             {
                 var content = text.Text ?? "";
                 var bytes = Encoding.UTF8.GetBytes(content);
-                var normalized = Encoding.UTF8.GetBytes(Whitespace.Replace(content, ""));
+                var normalized = Encoding.UTF8.GetBytes(NormalizeText(content));
                 parts.Add(new PartInfo(path, entity.ContentType.MimeType, null, text.FileName, encoding, bytes.Length, Hash(bytes), Hash(normalized), bytes));
                 break;
             }
@@ -157,12 +165,13 @@ public static class MessageInspector
     public static ContentSummary Summarize(MimeMessage message)
     {
         var parts = Describe(message);
-        string Fingerprint(Func<PartInfo, string?> hashOf) =>
-            Hash(Encoding.UTF8.GetBytes(string.Join("\n", parts.Select(p => $"{p.Path}|{p.ContentType}|{p.FileName}|{hashOf(p)}"))));
-        return new ContentSummary(
-            Fingerprint(p => p.DecodedHash),
-            Fingerprint(p => p.NormalizedTextHash ?? p.DecodedHash),
-            parts.Sum(p => p.DecodedSize));
+        var fingerprint = Hash(Encoding.UTF8.GetBytes(string.Join("\n", parts.Select(p => $"{p.Path}|{p.ContentType}|{p.FileName}|{p.DecodedHash}"))));
+        var leaves = parts
+            .Where(p => p.DecodedHash is not null)
+            .Select(p => $"{p.ContentType}|{p.FileName}|{p.NormalizedTextHash ?? p.DecodedHash}")
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        return new ContentSummary(fingerprint, leaves, parts.Sum(p => p.DecodedSize));
     }
 
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));
