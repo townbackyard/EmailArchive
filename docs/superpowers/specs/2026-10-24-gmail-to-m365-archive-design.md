@@ -163,10 +163,13 @@ any     -> Failed (with reason)
    they differ by more than 10 percent, but do not fail on size alone because
    Exchange re-encodes MIME on storage. On success mark `Verified`; on failure
    mark `Failed` and leave Gmail untouched.
-   With `--dedupe`, extra matching copies whose body (everything below the
-   header block) is byte-identical to the survivor are moved to Deleted Items
-   in the target mailbox before step 6. A removal failure is logged and the
-   message still proceeds, since it is verified either way.
+   With `--dedupe`, extra matching copies whose decoded content (MIME part
+   tree, text, attachments) equals the survivor's, or that have no content at
+   all, are moved to Deleted Items in the target mailbox before step 6. Raw
+   bytes are never compared: Exchange gives each stored copy its own boundaries
+   and Content-ID headers. An empty copy never survives when a copy with
+   content exists. A removal failure is logged and the message still proceeds,
+   since it is verified either way.
 6. **Trash.** Move the Gmail message to `[Gmail]/Trash`. Mark `Trashed`.
 7. **Purge.** Only if `--purge`: expunge from Trash. Mark `Purged`.
 

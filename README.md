@@ -29,11 +29,14 @@ window (default 5 years) without paying for extra Google storage.
 Options for `report` and `move`: `--keep-years N`, `--max-messages N`, `--max-bytes N`.
 
 Duplicates: an earlier manual archive attempt can leave the same message in the target folder twice. Two
-copies count as duplicates only when they share a Message-ID, match on Date, From and Subject, and have
-byte-identical bodies below the header block. The copy the ledger points at survives (otherwise the lowest
-UID); extras go to Deleted Items in Microsoft 365, never straight to expunge. `move --dedupe` handles the
-duplicates it meets while verifying; `dedupe` scans the whole target folder, which also covers messages
-that are no longer in Gmail. Neither touches Gmail.
+copies count as duplicates only when they share a Message-ID, match on Date, From and Subject, and carry
+identical decoded content: the same MIME part tree with the same text and the same attachments. Raw bytes
+are not compared because Exchange gives every stored copy its own part boundaries and Content-ID headers.
+A copy with no content at all (a failed upload) is removed whenever a copy with content exists. Otherwise
+the copy the ledger points at survives (else the lowest UID); extras go to Deleted Items in Microsoft 365,
+never straight to expunge. `move --dedupe` handles the duplicates it meets while verifying; `dedupe` scans
+the whole target folder, which also covers messages that are no longer in Gmail. Neither touches Gmail.
+`inspect <uid-a> <uid-b>` is a read-only diagnostic that shows how two copies differ.
 
 `--max-bytes` is a soft cap: the first selected message always moves even if it is larger, so every run makes progress.
 

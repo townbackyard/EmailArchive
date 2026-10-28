@@ -1,5 +1,6 @@
 using EmailArchive.Core.Auth;
 using EmailArchive.Core.Config;
+using EmailArchive.Core.Dedupe;
 using EmailArchive.Core.Model;
 using MailKit;
 using MailKit.Net.Imap;
@@ -138,22 +139,10 @@ public sealed class M365Target(
         return await SummarizeAsync(mailFolder, folder, uids, ct);
     }
 
-    public async Task<string?> GetBodyHashAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    public async Task<ContentSummary?> GetContentAsync(TargetFolder folder, uint uid, CancellationToken ct)
     {
-        var mailFolder = Resolve(folder);
-        await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
-        try
-        {
-            // BODY[TEXT] is everything after the header block: Exchange stamps each stored copy with its own
-            // headers, so the body is the part that can be compared byte for byte.
-            using var stream = await mailFolder.GetStreamAsync(new UniqueId(uid), "TEXT", ct);
-            var hash = await System.Security.Cryptography.SHA256.HashDataAsync(stream, ct);
-            return Convert.ToHexString(hash);
-        }
-        catch (MessageNotFoundException)
-        {
-            return null;
-        }
+        var message = await DownloadAsync(folder, uid, ct);
+        return message is null ? null : MessageInspector.Summarize(message);
     }
 
     public async Task<MimeMessage?> DownloadAsync(TargetFolder folder, uint uid, CancellationToken ct)

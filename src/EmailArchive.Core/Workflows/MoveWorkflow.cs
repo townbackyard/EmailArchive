@@ -230,8 +230,8 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
                             .ToList();
                         if (DuplicatePlan.Create(sameId, row.TargetUid) is { } plan)
                         {
-                            verifiedCopy = plan.Keep;
                             var outcome = await new DuplicateRemover(target, logger).ApplyAsync(plan, apply: true, ct);
+                            verifiedCopy = outcome.Kept;
                             run.DuplicatesRemoved += outcome.Removed;
                         }
                     }

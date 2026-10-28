@@ -54,7 +54,9 @@ public static class Commands
         Console.WriteLine();
         Console.WriteLine($"Messages stored more than once: {summary.Groups:N0}");
         Console.WriteLine($"{(apply ? "Moved to Deleted Items:" : "Would move to Deleted Items:")}  {summary.Removed:N0}");
-        Console.WriteLine($"Kept (body differs):            {summary.BodiesDiffer:N0}");
+        Console.WriteLine($"Kept (content differs):         {summary.ContentDiffers:N0}");
+        if (summary.WhitespaceOnly > 0)
+            Console.WriteLine($"  of which whitespace only:     {summary.WhitespaceOnly:N0}");
         Console.WriteLine($"Failed:                         {summary.Failed:N0}");
         Console.WriteLine(apply ? "Duplicates are in Deleted Items in Microsoft 365 until that folder is emptied." : "Nothing was changed. Pass --apply to move the duplicates to Deleted Items.");
         return summary.ExitCode;

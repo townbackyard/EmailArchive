@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using EmailArchive.Core.Model;
 using MimeKit;
 
 namespace EmailArchive.Core.Dedupe;
@@ -139,6 +140,18 @@ public static class MessageInspector
                 parts.Add(new PartInfo(path, entity.ContentType.MimeType, null, null, encoding, 0, null, null));
                 break;
         }
+    }
+
+    /// <summary>Fingerprints the decoded content so two stored copies compare equal however the server serialized them.</summary>
+    public static ContentSummary Summarize(MimeMessage message)
+    {
+        var parts = Describe(message);
+        string Fingerprint(Func<PartInfo, string?> hashOf) =>
+            Hash(Encoding.UTF8.GetBytes(string.Join("\n", parts.Select(p => $"{p.Path}|{p.ContentType}|{p.FileName}|{hashOf(p)}"))));
+        return new ContentSummary(
+            Fingerprint(p => p.DecodedHash),
+            Fingerprint(p => p.NormalizedTextHash ?? p.DecodedHash),
+            parts.Sum(p => p.DecodedSize));
     }
 
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));

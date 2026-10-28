@@ -119,16 +119,19 @@ public sealed class FakeTarget : IMailTarget
     public Dictionary<uint, string> Bodies { get; } = new();
     /// <summary>Messages moved to Deleted Items, in order.</summary>
     public List<(TargetFolder Folder, uint Uid)> DeletedItems { get; } = new();
-    public Exception? BodyHashFailure { get; set; }
+    public Exception? ContentFailure { get; set; }
     public Exception? MoveToDeletedFailure { get; set; }
 
-    public Task<string?> GetBodyHashAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    /// <summary>The fake's "decoded content" is the Bodies string itself; an empty string models a copy whose upload left nothing.</summary>
+    public Task<ContentSummary?> GetContentAsync(TargetFolder folder, uint uid, CancellationToken ct)
     {
-        Trace?.Add($"target.bodyHash:{uid}");
-        if (BodyHashFailure is not null) throw BodyHashFailure;
+        Trace?.Add($"target.content:{uid}");
+        if (ContentFailure is not null) throw ContentFailure;
         var info = Folders[folder].FirstOrDefault(m => m.Uid == uid);
-        if (info is null) return Task.FromResult<string?>(null);
-        return Task.FromResult<string?>(Bodies.TryGetValue(uid, out var body) ? body : $"body:{info.MessageId}");
+        if (info is null) return Task.FromResult<ContentSummary?>(null);
+        var body = Bodies.TryGetValue(uid, out var b) ? b : $"body:{info.MessageId}";
+        var normalized = System.Text.RegularExpressions.Regex.Replace(body, @"\s+", "");
+        return Task.FromResult<ContentSummary?>(new ContentSummary(body, normalized, body.Length));
     }
 
     public Task MoveToDeletedItemsAsync(TargetFolder folder, uint uid, CancellationToken ct)
