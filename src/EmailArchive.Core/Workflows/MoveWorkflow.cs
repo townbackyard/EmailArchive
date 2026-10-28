@@ -1,4 +1,5 @@
 using EmailArchive.Core.Auth;
+using EmailArchive.Core.Dedupe;
 using EmailArchive.Core.Ledger;
 using EmailArchive.Core.Mail;
 using EmailArchive.Core.Model;
@@ -34,7 +35,7 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
             foreach (var item in selected)
             {
                 ct.ThrowIfCancellationRequested();
-                var outcome = await ProcessAsync(item, run, options.Purge, errors, ct);
+                var outcome = await ProcessAsync(item, run, options.Purge, options.Dedupe, errors, ct);
                 if (outcome != ProcessOutcome.Error)
                 {
                     errors.Clear();
@@ -69,12 +70,12 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
             }
         }
 
-        return new RunSummary(run.Selected, run.Copied, run.AlreadyInTarget, run.Verified, run.Trashed, run.Purged, run.Failed, aborted);
+        return new RunSummary(run.Selected, run.Copied, run.AlreadyInTarget, run.Verified, run.Trashed, run.Purged, run.Failed, aborted, run.DuplicatesRemoved);
     }
 
     private enum ProcessOutcome { Ok, Failed, Error }
 
-    private async Task<ProcessOutcome> ProcessAsync(SelectedMessage item, LedgerRun run, bool purge, List<string> errors, CancellationToken ct)
+    private async Task<ProcessOutcome> ProcessAsync(SelectedMessage item, LedgerRun run, bool purge, bool dedupe, List<string> errors, CancellationToken ct)
     {
         var msg = item.Message;
         LedgerMessage row;
@@ -215,14 +216,32 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
                 if (!result.Success)
                     return await FailAsync(row, run, result.Reason!, errors, ProcessOutcome.Failed);
 
+                var verifiedCopy = result.Match!;
                 if (result.MatchCount > 1)
-                    logger.LogWarning("UID {Uid}: {Count} matching copies in target; verified against target UID {TargetUid}", msg.Uid, result.MatchCount, result.Match!.Uid);
+                {
+                    logger.LogWarning("UID {Uid}: {Count} matching copies in target; verified against target UID {TargetUid}", msg.Uid, result.MatchCount, verifiedCopy.Uid);
+                    // Only copies carrying this exact Message-ID are duplicates. A Fallback key matches on headers alone,
+                    // so a near-identical neighbour (same sender, subject, a minute apart) must never be removed.
+                    // The copy the ledger already points at survives. Removal failures are logged, never failed.
+                    if (dedupe && item.Key.Type == KeyType.MessageId)
+                    {
+                        var sameId = result.Matches
+                            .Where(c => MessageKeyBuilder.NormalizeMessageId(c.MessageId) == item.Key.Value)
+                            .ToList();
+                        if (DuplicatePlan.Create(sameId, row.TargetUid) is { } plan)
+                        {
+                            verifiedCopy = plan.Keep;
+                            var outcome = await new DuplicateRemover(target, logger).ApplyAsync(plan, apply: true, ct);
+                            run.DuplicatesRemoved += outcome.Removed;
+                        }
+                    }
+                }
                 if (result.SizeWarning)
-                    logger.LogWarning("UID {Uid}: size differs source={Source} target={Target}", msg.Uid, msg.Size, result.Match!.Size);
+                    logger.LogWarning("UID {Uid}: size differs source={Source} target={Target}", msg.Uid, msg.Size, verifiedCopy.Size);
 
                 row.TargetFolder = folder;
-                row.TargetUid = result.Match!.Uid;
-                row.TargetSize = result.Match.Size;
+                row.TargetUid = verifiedCopy.Uid;
+                row.TargetSize = verifiedCopy.Size;
                 row.VerifiedAt = DateTimeOffset.UtcNow;
                 row.State = MessageState.Verified;
                 run.Verified++;

@@ -647,6 +647,144 @@ public class MoveWorkflowTests
     }
 
     [Fact]
+    public async Task Dedupe_off_leaves_duplicate_copies_in_target()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 20));
+        _ledger.Seed(m, MessageState.Pending, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(0, summary.DuplicatesRemoved);
+        Assert.Empty(_target.DeletedItems);
+        Assert.Equal(2, _target.Folders[TargetFolder.Archive].Count);
+    }
+
+    [Fact]
+    public async Task Dedupe_on_removes_identical_extra_before_trashing()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 20));
+        _ledger.Seed(m, MessageState.Pending, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+        var trace = WireTrace();
+
+        var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(1, summary.DuplicatesRemoved);
+        Assert.Equal(new[] { (TargetFolder.Archive, 20u) }, _target.DeletedItems);
+        Assert.Equal(10L, Row(m).TargetUid);
+        Assert.Equal(1, _ledger.Runs[0].DuplicatesRemoved);
+        Assert.True(trace.IndexOf("target.moveToDeleted:20") < trace.IndexOf("source.trash:1"));
+        Assert.Contains("duplicatesRemoved=1", summary.ToString());
+    }
+
+    [Fact]
+    public async Task Dedupe_keeps_extra_whose_body_differs_and_still_trashes()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 20));
+        _target.Bodies[20] = "different";
+        _ledger.Seed(m, MessageState.Pending, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+
+        var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(0, summary.DuplicatesRemoved);
+        Assert.Empty(_target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Dedupe_removal_failure_is_logged_and_message_still_trashes()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 20));
+        _target.MoveToDeletedFailure = new IOException("boom");
+        _ledger.Seed(m, MessageState.Pending, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+
+        var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(0, summary.Failed);
+        Assert.Equal(0, summary.DuplicatesRemoved);
+        Assert.Equal(MessageState.Trashed, Row(m).State);
+    }
+
+    [Fact]
+    public async Task Dedupe_keeps_the_copy_the_ledger_points_at_even_when_not_lowest()
+    {
+        // Our own fresh append (UID 30, row Copied) next to an older manual copy (UID 10) reconcile never saw.
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 30));
+        _ledger.Seed(m, MessageState.Copied, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 30; });
+
+        var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.Equal(new[] { (TargetFolder.Archive, 10u) }, _target.DeletedItems);
+        Assert.Equal(30L, Row(m).TargetUid);
+    }
+
+    [Fact]
+    public async Task Dedupe_never_removes_copies_for_messages_without_a_message_id()
+    {
+        // Two alerts a minute apart, same sender/subject/body, no Message-ID: they verify against each other's
+        // copies, but neither is a duplicate of the other.
+        var a = Msg(1, "2010-01-01T12:00:00Z", messageId: null);
+        var b = Msg(2, "2010-01-01T12:01:00Z", messageId: null);
+        _source.Messages.Add(a);
+        _source.Messages.Add(b);
+        var trace = WireTrace();
+
+        var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
+
+        Assert.Equal(2, summary.Trashed);
+        Assert.Equal(0, summary.DuplicatesRemoved);
+        Assert.Empty(_target.DeletedItems);
+        Assert.Equal(2, _target.Folders[TargetFolder.Archive].Count);
+        Assert.DoesNotContain(trace, t => t.StartsWith("target.moveToDeleted:"));
+    }
+
+    [Fact]
+    public async Task Dedupe_ignores_a_matching_copy_with_a_different_message_id()
+    {
+        var m = Msg(1, "2010-01-01", messageId: "<one@x>");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 20) with { MessageId = "<two@x>" });
+        _ledger.Seed(m, MessageState.Pending, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 20; });
+
+        var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.Empty(_target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Dedupe_with_single_copy_touches_nothing()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        var trace = WireTrace();
+
+        var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
+
+        Assert.Equal(1, summary.Trashed);
+        Assert.DoesNotContain(trace, t => t.StartsWith("target.bodyHash:") || t.StartsWith("target.moveToDeleted:"));
+    }
+
+    [Fact]
     public async Task Two_copies_already_in_target_verify_against_lowest_uid()
     {
         var m = Msg(1, "2010-01-01");

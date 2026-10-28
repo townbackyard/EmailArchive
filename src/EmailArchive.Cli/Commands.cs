@@ -40,9 +40,26 @@ public static class Commands
         return 0;
     }
 
-    public static async Task<int> MoveAsync(AppHost host, int? keepYears, int? maxMessages, long? maxBytes, bool purge, CancellationToken ct)
+    public static async Task<int> DedupeAsync(AppHost host, bool apply, CancellationToken ct)
     {
-        var options = new MoveOptions(Selection(host, keepYears, maxMessages, maxBytes), purge);
+        var ledger = await host.CreateLedgerAsync(ct);
+        await using var target = host.CreateTarget();
+
+        var workflow = new DedupeWorkflow(target, ledger, host.LoggerFactory.CreateLogger<DedupeWorkflow>());
+        var summary = await workflow.RunAsync(apply, ct);
+
+        Console.WriteLine();
+        Console.WriteLine($"Messages stored more than once: {summary.Groups:N0}");
+        Console.WriteLine($"{(apply ? "Moved to Deleted Items:" : "Would move to Deleted Items:")}  {summary.Removed:N0}");
+        Console.WriteLine($"Kept (body differs):            {summary.BodiesDiffer:N0}");
+        Console.WriteLine($"Failed:                         {summary.Failed:N0}");
+        Console.WriteLine(apply ? "Duplicates are in Deleted Items in Microsoft 365 until that folder is emptied." : "Nothing was changed. Pass --apply to move the duplicates to Deleted Items.");
+        return summary.ExitCode;
+    }
+
+    public static async Task<int> MoveAsync(AppHost host, int? keepYears, int? maxMessages, long? maxBytes, bool purge, bool dedupe, CancellationToken ct)
+    {
+        var options = new MoveOptions(Selection(host, keepYears, maxMessages, maxBytes), purge, Dedupe: dedupe);
         var ledger = await host.CreateLedgerAsync(ct);
         await using var source = host.CreateSource();
         await using var target = host.CreateTarget();

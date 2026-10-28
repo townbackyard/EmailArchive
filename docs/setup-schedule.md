@@ -15,6 +15,9 @@ Run in a PowerShell window, after a successful manual `move` run:
 
     schtasks /Create /TN "EmailArchive Monthly" /SC MONTHLY /D 1 /ST 03:00 /TR "\"C:\Tools\EmailArchive\EmailArchive.exe\" move --purge" /RL LIMITED /F
 
+Add `--dedupe` to the command if you want identical duplicate copies in the target folder removed as
+the run meets them (see the README).
+
 `--purge` expunges each message from Gmail Trash immediately after it is verified in Microsoft 365, with no recovery window. Leave it off if you want the 30-day Trash safety net.
 
 This runs on the first of every month at 03:00 as the current user, with "Run only when user is logged
