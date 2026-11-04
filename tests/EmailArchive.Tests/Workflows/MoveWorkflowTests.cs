@@ -110,7 +110,7 @@ public class MoveWorkflowTests
         Assert.Empty(_source.Trashed);
         var row = Row(m);
         Assert.Equal(MessageState.Failed, row.State);
-        Assert.Equal("candidate headers do not match", row.FailureReason);
+        Assert.StartsWith("candidate headers do not match: target UID ", row.FailureReason);
     }
 
     [Fact]
@@ -236,7 +236,7 @@ public class MoveWorkflowTests
 
         Assert.Equal(1, summary.Failed);
         Assert.Empty(_source.Trashed);
-        Assert.Equal("candidate headers do not match", Row(copy).FailureReason);
+        Assert.StartsWith("candidate headers do not match: target UID ", Row(copy).FailureReason);
     }
 
     [Fact]

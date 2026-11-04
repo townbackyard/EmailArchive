@@ -32,7 +32,7 @@ public class VerifierTests
         var bad = Target(src) with { Subject = "B" };
         var result = Verifier.Verify(src, new[] { bad });
         Assert.False(result.Success);
-        Assert.Equal("candidate headers do not match", result.Reason);
+        Assert.Equal("candidate headers do not match: target UID 500 subject \"A\" vs \"B\"", result.Reason);
     }
 
     [Fact]
