@@ -40,4 +40,26 @@ public class HeaderNormalizerTests
         Assert.False(HeaderNormalizer.DatesMatch(a, null));
         Assert.False(HeaderNormalizer.DatesMatch(null, a));
     }
+
+    [Fact]
+    public void SubjectsMatch_tolerates_exchange_replacing_unmappable_characters_with_question_marks()
+    {
+        Assert.True(HeaderNormalizer.SubjectsMatch("You’re getting a refund for your return.", "You?re getting a refund for your return. "));
+        Assert.True(HeaderNormalizer.SubjectsMatch("Café — menu", "Caf? ? menu"));
+        Assert.True(HeaderNormalizer.SubjectsMatch("Plain subject", "Plain  subject"));
+    }
+
+    [Fact]
+    public void SubjectsMatch_still_rejects_real_differences()
+    {
+        Assert.False(HeaderNormalizer.SubjectsMatch("You're getting a refund", "You?re getting a refund"));
+        Assert.False(HeaderNormalizer.SubjectsMatch("Invoice 123", "Invoice 124"));
+        Assert.False(HeaderNormalizer.SubjectsMatch("Re: hello", "hello"));
+    }
+
+    [Fact]
+    public void NormalizeSubject_keeps_non_ascii_characters_for_keys()
+    {
+        Assert.Equal("You’re here", HeaderNormalizer.NormalizeSubject("You’re  here"));
+    }
 }
