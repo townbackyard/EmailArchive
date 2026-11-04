@@ -1,5 +1,6 @@
 ﻿using System.CommandLine;
 using EmailArchive.Cli;
+using EmailArchive.Core.Model;
 
 var keepYears = new Option<int?>("--keep-years") { Description = "Keep this many years in Gmail (overrides Selection:KeepYears)" };
 keepYears.Validators.Add(r => { if (r.GetValueOrDefault<int?>() is < 0) r.AddError("--keep-years must be at least 0"); });
@@ -25,6 +26,14 @@ move.SetAction((parse, ct) => AppHost.RunAsync(validate: true,
 var dedupeCommand = new Command("dedupe", "Find messages stored more than once in the Microsoft 365 target folders and move identical extras to Deleted Items. Never touches Gmail.") { apply };
 dedupeCommand.SetAction((parse, ct) => AppHost.RunAsync(validate: true, (host, token) => Commands.DedupeAsync(host, parse.GetValue(apply), token), ct));
 
+var inspectUidA = new Argument<uint>("uid-a") { Description = "UID of the first copy in the target folder" };
+var inspectUidB = new Argument<uint>("uid-b") { Description = "UID of the second copy" };
+var inspectFolder = new Option<TargetFolder>("--folder") { Description = "Which target folder holds the UIDs", DefaultValueFactory = _ => TargetFolder.Archive };
+var inspect = new Command("inspect", "Diagnostic: download two copies from a Microsoft 365 target folder and show how their MIME structure and bodies differ. Read-only; never touches Gmail.")
+    { inspectUidA, inspectUidB, inspectFolder };
+inspect.SetAction((parse, ct) => AppHost.RunAsync(validate: true,
+    (host, token) => Commands.InspectAsync(host, parse.GetValue(inspectFolder), parse.GetValue(inspectUidA), parse.GetValue(inspectUidB), token), ct));
+
 var login = new Command("login", "Sign in to Microsoft interactively and cache the token.");
 login.SetAction((parse, ct) => AppHost.RunAsync(validate: true, Commands.LoginAsync, ct));
 
@@ -38,7 +47,7 @@ var credentials = new Command("credentials", "Manage stored secrets.") { setGmai
 
 var root = new RootCommand("Move the oldest Gmail messages into a Microsoft 365 mailbox, verify, then trash them in Gmail.")
 {
-    report, reconcile, move, dedupeCommand, login, credentials,
+    report, reconcile, move, dedupeCommand, inspect, login, credentials,
 };
 
 return await root.Parse(args).InvokeAsync();

@@ -1,5 +1,6 @@
 using EmailArchive.Core.Auth;
 using EmailArchive.Core.Config;
+using EmailArchive.Core.Dedupe;
 using EmailArchive.Core.Model;
 using MailKit;
 using MailKit.Net.Imap;
@@ -134,20 +135,41 @@ public sealed class M365Target(
         if (uids.Count != mailFolder.Count)
             logger.LogWarning("{Folder}: server reports {Exists} messages but SEARCH ALL returned {Found}",
                 folder, mailFolder.Count, uids.Count);
+        logger.LogInformation("{Folder}: scanning {Count} messages", folder, uids.Count);
         return await SummarizeAsync(mailFolder, folder, uids, ct);
     }
 
-    public async Task<string?> GetBodyHashAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    public async Task<ContentSummary?> GetContentAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        var message = await DownloadAsync(folder, uid, ct);
+        return message is null ? null : MessageInspector.Summarize(message);
+    }
+
+    public async Task<MimeMessage?> DownloadAsync(TargetFolder folder, uint uid, CancellationToken ct)
     {
         var mailFolder = Resolve(folder);
         await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
         try
         {
-            // BODY[TEXT] is everything after the header block: Exchange stamps each stored copy with its own
-            // headers, so the body is the part that can be compared byte for byte.
+            // MailKit fetches with BODY.PEEK, so the \Seen flag is left as it was.
+            return await mailFolder.GetMessageAsync(new UniqueId(uid), ct);
+        }
+        catch (MessageNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    public async Task<byte[]?> GetBodyBytesAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    {
+        var mailFolder = Resolve(folder);
+        await mailFolder.OpenAsync(FolderAccess.ReadOnly, ct);
+        try
+        {
             using var stream = await mailFolder.GetStreamAsync(new UniqueId(uid), "TEXT", ct);
-            var hash = await System.Security.Cryptography.SHA256.HashDataAsync(stream, ct);
-            return Convert.ToHexString(hash);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct);
+            return buffer.ToArray();
         }
         catch (MessageNotFoundException)
         {
@@ -249,10 +271,12 @@ public sealed class M365Target(
         _ => throw new ArgumentOutOfRangeException(nameof(folder)),
     };
 
-    private static async Task<IReadOnlyList<TargetMessageInfo>> SummarizeAsync(IMailFolder mailFolder, TargetFolder folder, IList<UniqueId> uids, CancellationToken ct)
+    private async Task<IReadOnlyList<TargetMessageInfo>> SummarizeAsync(IMailFolder mailFolder, TargetFolder folder, IList<UniqueId> uids, CancellationToken ct)
     {
         const MessageSummaryItems items = MessageSummaryItems.UniqueId | MessageSummaryItems.Envelope | MessageSummaryItems.Size;
         var result = new List<TargetMessageInfo>(uids.Count);
+        var batches = (uids.Count + FetchBatchSize - 1) / FetchBatchSize;
+        var batchNumber = 0;
         foreach (var batch in uids.Chunk(FetchBatchSize))
         {
             var summaries = await mailFolder.FetchAsync(batch, items, ct);
@@ -264,6 +288,11 @@ public sealed class M365Target(
                 s.Envelope?.From?.Mailboxes.FirstOrDefault()?.Address ?? "",
                 s.Envelope?.Subject ?? "",
                 s.Size ?? 0)));
+            batchNumber++;
+            // Folder-wide scans run for many minutes; a single lookup or search does not need a progress line.
+            if (batches > 1)
+                logger.LogInformation("{Folder}: batch {Batch}/{Batches}, {Fetched}/{Total} messages read",
+                    folder, batchNumber, batches, result.Count, uids.Count);
         }
         return result;
     }

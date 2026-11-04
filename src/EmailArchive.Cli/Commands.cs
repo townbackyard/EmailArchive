@@ -1,8 +1,11 @@
 using EmailArchive.Core.Config;
 using EmailArchive.Core.Credentials;
+using EmailArchive.Core.Dedupe;
+using EmailArchive.Core.Model;
 using EmailArchive.Core.Selection;
 using EmailArchive.Core.Workflows;
 using Microsoft.Extensions.Logging;
+using MimeKit;
 
 namespace EmailArchive.Cli;
 
@@ -51,10 +54,70 @@ public static class Commands
         Console.WriteLine();
         Console.WriteLine($"Messages stored more than once: {summary.Groups:N0}");
         Console.WriteLine($"{(apply ? "Moved to Deleted Items:" : "Would move to Deleted Items:")}  {summary.Removed:N0}");
-        Console.WriteLine($"Kept (body differs):            {summary.BodiesDiffer:N0}");
+        if (summary.Equivalent > 0)
+            Console.WriteLine($"  of which not byte-identical:  {summary.Equivalent:N0} (re-wrapped text, re-tokenized links, or missing parts)");
+        Console.WriteLine($"Kept (content differs):         {summary.ContentDiffers:N0}");
         Console.WriteLine($"Failed:                         {summary.Failed:N0}");
         Console.WriteLine(apply ? "Duplicates are in Deleted Items in Microsoft 365 until that folder is emptied." : "Nothing was changed. Pass --apply to move the duplicates to Deleted Items.");
         return summary.ExitCode;
+    }
+
+    /// <summary>Diagnostic: downloads two copies from a target folder and explains how they differ. Read-only.</summary>
+    public static async Task<int> InspectAsync(AppHost host, TargetFolder folder, uint uidA, uint uidB, CancellationToken ct)
+    {
+        await using var target = host.CreateTarget();
+        await target.ConnectAsync(ct);
+        await target.EnsureFoldersAsync(ct);
+
+        var reports = new List<IReadOnlyList<PartInfo>>();
+        var bodies = new List<byte[]>();
+        foreach (var uid in new[] { uidA, uidB })
+        {
+            var message = await target.DownloadAsync(folder, uid, ct);
+            var body = await target.GetBodyBytesAsync(folder, uid, ct);
+            if (message is null || body is null)
+            {
+                Console.Error.WriteLine($"UID {uid} not found in {folder}.");
+                return 1;
+            }
+
+            var parts = MessageInspector.Describe(message);
+            reports.Add(parts);
+            bodies.Add(body);
+
+            Console.WriteLine();
+            Console.WriteLine($"UID {uid}: raw body {body.Length:N0} bytes, Date {message.Date:yyyy-MM-dd HH:mm:ss zzz}, Message-ID <{message.MessageId}>");
+            var received = message.Headers.Count(h => h.Id == HeaderId.Received);
+            var msHeaders = message.Headers.Count(h => h.Field.StartsWith("X-MS-", StringComparison.OrdinalIgnoreCase));
+            var googleHeaders = message.Headers.Count(h => h.Field.StartsWith("X-Google-", StringComparison.OrdinalIgnoreCase));
+            Console.WriteLine($"  Headers: {message.Headers.Count} total, Received {received}, X-MS-* {msHeaders}, X-Google-* {googleHeaders}");
+            foreach (var part in parts)
+            {
+                var indent = new string(' ', 2 * part.Path.Count(c => c == '.') + 2);
+                var detail = part.DecodedHash is null
+                    ? (part.Boundary is null ? "" : $" boundary=\"{part.Boundary}\"")
+                    : $" {part.Encoding}, decoded {part.DecodedSize:N0} bytes, sha256 {part.DecodedHash[..12]}" + (part.NormalizedTextHash is null ? "" : $", no-whitespace {part.NormalizedTextHash[..12]}");
+                var name = part.FileName is null ? "" : $" \"{part.FileName}\"";
+                Console.WriteLine($"{indent}{part.Path} {part.ContentType}{name}{detail}");
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"Comparison of UID {uidA} and UID {uidB}:");
+        foreach (var line in MessageInspector.Compare(reports[0], reports[1]))
+            Console.WriteLine($"  {line}");
+
+        var diff = MessageInspector.FirstDifference(bodies[0], bodies[1]);
+        if (diff is null)
+            Console.WriteLine("  Raw bodies are byte-identical.");
+        else
+        {
+            Console.WriteLine($"  Raw bodies first differ at byte {diff.Value.Offset:N0} of {bodies[0].Length:N0} / {bodies[1].Length:N0}:");
+            Console.WriteLine($"    {uidA}: {diff.Value.Left}");
+            Console.WriteLine($"    {uidB}: {diff.Value.Right}");
+        }
+        Console.WriteLine("Nothing was changed.");
+        return 0;
     }
 
     public static async Task<int> MoveAsync(AppHost host, int? keepYears, int? maxMessages, long? maxBytes, bool purge, bool dedupe, CancellationToken ct)

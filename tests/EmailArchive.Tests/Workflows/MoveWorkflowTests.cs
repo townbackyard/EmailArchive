@@ -781,7 +781,7 @@ public class MoveWorkflowTests
         var summary = await Workflow().RunAsync(Opts() with { Dedupe = true }, CancellationToken.None);
 
         Assert.Equal(1, summary.Trashed);
-        Assert.DoesNotContain(trace, t => t.StartsWith("target.bodyHash:") || t.StartsWith("target.moveToDeleted:"));
+        Assert.DoesNotContain(trace, t => t.StartsWith("target.content:") || t.StartsWith("target.moveToDeleted:"));
     }
 
     [Fact]

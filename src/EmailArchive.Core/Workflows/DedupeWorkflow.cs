@@ -9,9 +9,10 @@ namespace EmailArchive.Core.Workflows;
 
 /// <param name="Groups">Message-IDs that appear more than once in a target folder.</param>
 /// <param name="Removed">Copies moved to Deleted Items, or that would be in a dry run.</param>
-/// <param name="BodiesDiffer">Copies left in place because their body differs from the survivor's.</param>
+/// <param name="ContentDiffers">Copies left in place because their decoded content differs from the survivor's.</param>
 /// <param name="Failed">Copies that could not be read or moved.</param>
-public sealed record DedupeSummary(int Groups, int Removed, int BodiesDiffer, int Failed, bool Applied)
+/// <param name="Equivalent">Of the copies removed, those that were not byte-identical: re-wrapped text, re-tokenized links, or missing parts.</param>
+public sealed record DedupeSummary(int Groups, int Removed, int ContentDiffers, int Failed, bool Applied, int Equivalent = 0)
 {
     public int ExitCode => Failed > 0 ? 1 : 0;
 }
@@ -25,7 +26,7 @@ public sealed class DedupeWorkflow(IMailTarget target, ILedger ledger, ILogger<D
     public async Task<DedupeSummary> RunAsync(bool apply, CancellationToken ct)
     {
         var run = await ledger.StartRunAsync(RunMode.Dedupe, null, ct);
-        int groups = 0, removed = 0, differ = 0, failed = 0;
+        int groups = 0, removed = 0, differ = 0, equivalent = 0, failed = 0;
         var exitCode = 2;
 
         try
@@ -45,6 +46,7 @@ public sealed class DedupeWorkflow(IMailTarget target, ILedger ledger, ILogger<D
                     .ToList();
                 logger.LogInformation("{Folder}: {Count} messages, {Groups} Message-IDs stored more than once", folder, messages.Count, duplicated.Count);
 
+                var checkedInFolder = 0;
                 foreach (var group in duplicated)
                 {
                     ct.ThrowIfCancellationRequested();
@@ -54,20 +56,35 @@ public sealed class DedupeWorkflow(IMailTarget target, ILedger ledger, ILogger<D
                     if (plan is null)
                     {
                         logger.LogWarning("{Folder}: Message-ID {MessageId} appears {Count} times but the copies' headers differ; keeping all", folder, group.Key, group.Count());
-                        continue;
+                    }
+                    else
+                    {
+                        groups++;
+                        var outcome = await remover.ApplyAsync(plan, apply, ct);
+                        removed += outcome.Removed;
+                        differ += outcome.ContentDiffers;
+                        equivalent += outcome.Equivalent;
+                        failed += outcome.Failed;
+                        if (apply && row is not null && row.TargetFolder == folder && row.TargetUid == plan.Keep.Uid && outcome.Kept.Uid != plan.Keep.Uid)
+                        {
+                            // The copy the ledger pointed at was empty or incomplete and another copy carried more.
+                            row.TargetUid = outcome.Kept.Uid;
+                            row.TargetSize = outcome.Kept.Size;
+                            await ledger.SaveAsync(row, CancellationToken.None);
+                            logger.LogInformation("Ledger now points at target UID {Uid} for Message-ID {MessageId}", outcome.Kept.Uid, group.Key);
+                        }
+                        if (outcome.Failed > 0)
+                        {
+                            // A failure is most often a dropped IMAP connection; reconnect so one drop costs one group, not the rest of the run.
+                            logger.LogInformation("Reconnecting to Microsoft 365 after a failed group");
+                            await target.ReconnectAsync(ct);
+                        }
                     }
 
-                    groups++;
-                    var outcome = await remover.ApplyAsync(plan, apply, ct);
-                    removed += outcome.Removed;
-                    differ += outcome.BodiesDiffer;
-                    failed += outcome.Failed;
-                    if (outcome.Failed > 0)
-                    {
-                        // A failure is most often a dropped IMAP connection; reconnect so one drop costs one group, not the rest of the run.
-                        logger.LogInformation("Reconnecting to Microsoft 365 after a failed group");
-                        await target.ReconnectAsync(ct);
-                    }
+                    checkedInFolder++;
+                    if (checkedInFolder % 50 == 0 || checkedInFolder == duplicated.Count)
+                        logger.LogInformation("{Folder}: checked {Checked}/{Total} duplicate groups so far: {Removed} {Verb}, {Differ} kept (content differs), {Failed} failed",
+                            folder, checkedInFolder, duplicated.Count, removed, apply ? "moved" : "would move", differ, failed);
                 }
             }
 
@@ -96,6 +113,6 @@ public sealed class DedupeWorkflow(IMailTarget target, ILedger ledger, ILogger<D
             }
         }
 
-        return new DedupeSummary(groups, removed, differ, failed, apply);
+        return new DedupeSummary(groups, removed, differ, failed, apply, equivalent);
     }
 }

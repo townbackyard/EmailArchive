@@ -1,3 +1,4 @@
+using EmailArchive.Core.Dedupe;
 using EmailArchive.Core.Mail;
 using EmailArchive.Core.Model;
 using MimeKit;
@@ -119,16 +120,22 @@ public sealed class FakeTarget : IMailTarget
     public Dictionary<uint, string> Bodies { get; } = new();
     /// <summary>Messages moved to Deleted Items, in order.</summary>
     public List<(TargetFolder Folder, uint Uid)> DeletedItems { get; } = new();
-    public Exception? BodyHashFailure { get; set; }
+    public Exception? ContentFailure { get; set; }
     public Exception? MoveToDeletedFailure { get; set; }
 
-    public Task<string?> GetBodyHashAsync(TargetFolder folder, uint uid, CancellationToken ct)
+    /// <summary>
+    /// The fake's "decoded content" is the Bodies string itself, split on ';' into one leaf part per piece; an empty
+    /// string models a copy whose upload left nothing. Parts are keyed like the real inspector: links and whitespace removed.
+    /// </summary>
+    public Task<ContentSummary?> GetContentAsync(TargetFolder folder, uint uid, CancellationToken ct)
     {
-        Trace?.Add($"target.bodyHash:{uid}");
-        if (BodyHashFailure is not null) throw BodyHashFailure;
+        Trace?.Add($"target.content:{uid}");
+        if (ContentFailure is not null) throw ContentFailure;
         var info = Folders[folder].FirstOrDefault(m => m.Uid == uid);
-        if (info is null) return Task.FromResult<string?>(null);
-        return Task.FromResult<string?>(Bodies.TryGetValue(uid, out var body) ? body : $"body:{info.MessageId}");
+        if (info is null) return Task.FromResult<ContentSummary?>(null);
+        var body = Bodies.TryGetValue(uid, out var b) ? b : $"body:{info.MessageId}";
+        var parts = body.Split(';').Select(MessageInspector.NormalizeText).Order(StringComparer.Ordinal).ToList();
+        return Task.FromResult<ContentSummary?>(new ContentSummary(body, parts, body.Length));
     }
 
     public Task MoveToDeletedItemsAsync(TargetFolder folder, uint uid, CancellationToken ct)
@@ -140,6 +147,12 @@ public sealed class FakeTarget : IMailTarget
         DeletedItems.Add((folder, uid));
         return Task.CompletedTask;
     }
+
+    public Task<MimeMessage?> DownloadAsync(TargetFolder folder, uint uid, CancellationToken ct) =>
+        throw new NotSupportedException("The inspect command is diagnostic only and is not exercised through the fake");
+
+    public Task<byte[]?> GetBodyBytesAsync(TargetFolder folder, uint uid, CancellationToken ct) =>
+        throw new NotSupportedException("The inspect command is diagnostic only and is not exercised through the fake");
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

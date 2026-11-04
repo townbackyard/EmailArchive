@@ -152,10 +152,71 @@ public class DedupeWorkflowTests
     {
         _target.Folders[TargetFolder.Archive].Add(Target(Msg(1, "2010-01-01"), uid: 10));
         _target.Folders[TargetFolder.Archive].Add(Target(Msg(1, "2010-01-01"), uid: 11));
-        _target.BodyHashFailure = new AuthRequiredException("token expired");
+        _target.ContentFailure = new AuthRequiredException("token expired");
 
         await Assert.ThrowsAsync<AuthRequiredException>(() => Workflow().RunAsync(apply: true, CancellationToken.None));
 
         Assert.Equal(3, _ledger.Runs[0].ExitCode);
+    }
+
+    [Fact]
+    public async Task Empty_ledger_referenced_copy_is_removed_and_the_ledger_repointed()
+    {
+        var a = Msg(1, "2010-01-01");
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 11));
+        _target.Bodies[10] = "";
+        var row = _ledger.Seed(a, MessageState.Trashed, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+
+        var summary = await Workflow().RunAsync(apply: true, CancellationToken.None);
+
+        Assert.Equal(new DedupeSummary(1, 1, 0, 0, true), summary);
+        Assert.Equal(new[] { (TargetFolder.Archive, 10u) }, _target.DeletedItems);
+        Assert.Equal(11, _ledger.Rows[row.Key].TargetUid);
+    }
+
+    [Fact]
+    public async Task Dry_run_does_not_repoint_the_ledger()
+    {
+        var a = Msg(1, "2010-01-01");
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 11));
+        _target.Bodies[10] = "";
+        var row = _ledger.Seed(a, MessageState.Trashed, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+
+        await Workflow().RunAsync(apply: false, CancellationToken.None);
+
+        Assert.Equal(10, _ledger.Rows[row.Key].TargetUid);
+    }
+
+    [Fact]
+    public async Task Equivalent_copies_are_removed_and_counted_separately()
+    {
+        var a = Msg(1, "2010-01-01");
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 11));
+        _target.Bodies[10] = "a b";
+        _target.Bodies[11] = "a  b";
+
+        var summary = await Workflow().RunAsync(apply: true, CancellationToken.None);
+
+        Assert.Equal(new DedupeSummary(1, 1, 0, 0, true, Equivalent: 1), summary);
+        Assert.Equal(new[] { (TargetFolder.Archive, 11u) }, _target.DeletedItems);
+    }
+
+    [Fact]
+    public async Task Ledger_is_repointed_when_the_fuller_copy_replaces_its_partial_one()
+    {
+        var a = Msg(1, "2010-01-01");
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 10));
+        _target.Folders[TargetFolder.Archive].Add(Target(a, uid: 11));
+        _target.Bodies[10] = "html";
+        _target.Bodies[11] = "plain;html";
+        var row = _ledger.Seed(a, MessageState.Trashed, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 10; });
+
+        await Workflow().RunAsync(apply: true, CancellationToken.None);
+
+        Assert.Equal(new[] { (TargetFolder.Archive, 10u) }, _target.DeletedItems);
+        Assert.Equal(11, _ledger.Rows[row.Key].TargetUid);
     }
 }
