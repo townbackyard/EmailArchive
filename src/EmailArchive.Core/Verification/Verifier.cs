@@ -39,7 +39,7 @@ public static class Verifier
     public static bool Matches(SourceMessageInfo source, TargetMessageInfo target) =>
         HeaderNormalizer.DatesMatch(source.HeaderDate, target.HeaderDate)
         && HeaderNormalizer.NormalizeAddress(source.From) == HeaderNormalizer.NormalizeAddress(target.From)
-        && HeaderNormalizer.NormalizeSubject(source.Subject) == HeaderNormalizer.NormalizeSubject(target.Subject);
+        && HeaderNormalizer.SubjectsMatch(source.Subject, target.Subject);
 
     /// <summary>Names each header that stops a candidate from matching, with both values, so a failure explains itself in the log and ledger.</summary>
     public static string Explain(SourceMessageInfo source, TargetMessageInfo candidate)
@@ -49,7 +49,7 @@ public static class Verifier
             differences.Add($"date {Show(source.HeaderDate)} vs {Show(candidate.HeaderDate)}");
         if (HeaderNormalizer.NormalizeAddress(source.From) != HeaderNormalizer.NormalizeAddress(candidate.From))
             differences.Add($"from \"{source.From}\" vs \"{candidate.From}\"");
-        if (HeaderNormalizer.NormalizeSubject(source.Subject) != HeaderNormalizer.NormalizeSubject(candidate.Subject))
+        if (!HeaderNormalizer.SubjectsMatch(source.Subject, candidate.Subject))
             differences.Add($"subject \"{source.Subject}\" vs \"{candidate.Subject}\"");
         return $"target UID {candidate.Uid} {(differences.Count == 0 ? "matches" : string.Join(", ", differences))}";
 
@@ -60,5 +60,5 @@ public static class Verifier
     public static bool Matches(TargetMessageInfo a, TargetMessageInfo b) =>
         HeaderNormalizer.DatesMatch(a.HeaderDate, b.HeaderDate)
         && HeaderNormalizer.NormalizeAddress(a.From) == HeaderNormalizer.NormalizeAddress(b.From)
-        && HeaderNormalizer.NormalizeSubject(a.Subject) == HeaderNormalizer.NormalizeSubject(b.Subject);
+        && HeaderNormalizer.SubjectsMatch(a.Subject, b.Subject);
 }

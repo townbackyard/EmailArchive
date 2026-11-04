@@ -85,9 +85,37 @@ public sealed class GmailSource(GmailSettings settings, string appPassword, ILog
         foreach (var batch in uids.Chunk(FetchBatchSize))
         {
             var summaries = await folder.FetchAsync(batch, items, ct);
-            result.AddRange(summaries.Select(ToInfo));
+            result.AddRange(Complete(summaries, batch, logger).Select(ToInfo));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Keeps only the records that answer the request. While a FETCH is running, Gmail also sends unsolicited lines for
+    /// messages another client just touched; MailKit folds those partial records into the batch results. A record for a
+    /// UID we never asked about is ignored; a requested message that came back without the fields we need is skipped
+    /// with a warning and is considered again on the next run, rather than aborting the whole run.
+    /// </summary>
+    public static IEnumerable<IMessageSummary> Complete(IEnumerable<IMessageSummary> summaries, IEnumerable<UniqueId> requested, ILogger logger)
+    {
+        var wanted = requested.ToHashSet();
+        foreach (var s in summaries)
+        {
+            if (!wanted.Contains(s.UniqueId))
+            {
+                logger.LogDebug("Gmail sent a record for UID {Uid}, which was not requested; ignoring it", s.UniqueId.Id);
+                continue;
+            }
+            var missing = new List<string>();
+            if (s.InternalDate is null) missing.Add("INTERNALDATE");
+            if (s.Envelope is null) missing.Add("ENVELOPE");
+            if (missing.Count > 0)
+            {
+                logger.LogWarning("Gmail returned an incomplete record for UID {Uid} (no {Missing}); skipping it this run", s.UniqueId.Id, string.Join(", ", missing));
+                continue;
+            }
+            yield return s;
+        }
     }
 
     public Task<MimeMessage> FetchAsync(uint uid, CancellationToken ct) =>
