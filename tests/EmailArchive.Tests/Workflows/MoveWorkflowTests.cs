@@ -855,4 +855,46 @@ public class MoveWorkflowTests
         Assert.Equal(1, summary.Trashed);
         Assert.Equal(KeyType.Fallback, Row(m).KeyType);
     }
+
+    [Fact]
+    public async Task Reconciled_target_uid_that_fails_verification_is_dropped_so_the_next_run_appends()
+    {
+        // A sender that reuses Message-IDs: reconcile pointed this key at a different message's copy.
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 77) with { Subject = "an unrelated message with the same Message-ID" });
+        _ledger.Seed(m, MessageState.Pending, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 77; });
+
+        var first = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, first.Failed);
+        Assert.Equal(0, first.Copied);
+        Assert.Empty(_source.Trashed);
+        Assert.Equal(MessageState.Failed, Row(m).State);
+        Assert.Null(Row(m).TargetUid);
+
+        var second = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(0, second.Failed);
+        Assert.Equal(1, second.Copied);
+        Assert.Equal(1, second.Trashed);
+        Assert.Single(_target.Appended);
+        Assert.Equal(2, _target.Folders[TargetFolder.Archive].Count);
+        Assert.NotEqual(77L, Row(m).TargetUid);
+    }
+
+    [Fact]
+    public async Task Copied_target_uid_is_kept_when_verification_fails()
+    {
+        var m = Msg(1, "2010-01-01");
+        _source.Messages.Add(m);
+        _target.Folders[TargetFolder.Archive].Add(Target(m, uid: 5) with { Subject = "rewritten beyond recognition" });
+        _ledger.Seed(m, MessageState.Copied, r => { r.TargetFolder = TargetFolder.Archive; r.TargetUid = 5; r.CopiedAt = DateTimeOffset.UtcNow; });
+
+        var summary = await Workflow().RunAsync(Opts(), CancellationToken.None);
+
+        Assert.Equal(1, summary.Failed);
+        Assert.Equal(5L, Row(m).TargetUid);
+        Assert.Empty(_target.Appended);
+    }
 }

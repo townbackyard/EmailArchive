@@ -62,4 +62,13 @@ public class HeaderNormalizerTests
     {
         Assert.Equal("You’re here", HeaderNormalizer.NormalizeSubject("You’re  here"));
     }
+
+    [Fact]
+    public void SubjectsMatch_tolerates_one_character_stored_as_several_mojibake_characters()
+    {
+        // An em dash (U+2014) arrives as three characters when Exchange decodes the UTF-8 bytes as Latin-1.
+        Assert.True(HeaderNormalizer.SubjectsMatch("ChildSafetyAlert—KidsLiveSafe-.  [M.Id:058]", "ChildSafetyAlertâ?”KidsLiveSafe-.  [M.Id:058]"));
+        Assert.True(HeaderNormalizer.SubjectsMatch("Café — menu", "CafÃ© â€” menu"));
+        Assert.False(HeaderNormalizer.SubjectsMatch("Café menu", "Cafe menu"));
+    }
 }

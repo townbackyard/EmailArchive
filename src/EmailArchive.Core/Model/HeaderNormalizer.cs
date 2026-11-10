@@ -15,8 +15,10 @@ public static partial class HeaderNormalizer
 
     /// <summary>
     /// Subject comparison for verification. Exchange stores a subject whose characters it cannot map (a curly
-    /// apostrophe in a mislabelled charset, for example) with '?' in their place, so every non-ASCII character is
-    /// folded to '?' on both sides before comparing. Message keys keep the exact subject; only matching is lenient.
+    /// apostrophe in a mislabelled charset, for example) with '?' in their place, and a UTF-8 character it decodes as
+    /// Latin-1 becomes two or three characters of mojibake. Every non-ASCII character is folded to '?' on both sides
+    /// and runs of '?' collapse to one, so one original character matches however many the server made of it.
+    /// Message keys keep the exact subject; only matching is lenient.
     /// </summary>
     public static bool SubjectsMatch(string? a, string? b) => Fold(NormalizeSubject(a)) == Fold(NormalizeSubject(b));
 
@@ -24,7 +26,11 @@ public static partial class HeaderNormalizer
     {
         var sb = new System.Text.StringBuilder(subject.Length);
         foreach (var rune in subject.EnumerateRunes())
-            sb.Append(rune.IsAscii ? (char)rune.Value : '?');
+        {
+            var c = rune.IsAscii ? (char)rune.Value : '?';
+            if (c == '?' && sb.Length > 0 && sb[^1] == '?') continue;
+            sb.Append(c);
+        }
         return sb.ToString();
     }
 
