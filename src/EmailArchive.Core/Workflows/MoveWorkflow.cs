@@ -214,7 +214,13 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
                 }
                 var result = Verifier.Verify(msg, candidates);
                 if (!result.Success)
+                {
+                    // A target UID this tool never appended (reconcile matched it by a Message-ID the sender reuses) is a
+                    // hint, not a fact. Drop it so the next run searches by headers and appends a real copy instead of
+                    // taking the same shortcut and failing the same way.
+                    if (row.CopiedAt is null) row.TargetUid = null;
                     return await FailAsync(row, run, result.Reason!, errors, ProcessOutcome.Failed);
+                }
 
                 var verifiedCopy = result.Match!;
                 if (result.MatchCount > 1)
