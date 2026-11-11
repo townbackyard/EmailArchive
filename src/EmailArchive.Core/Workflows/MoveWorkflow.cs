@@ -75,6 +75,10 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
 
     private enum ProcessOutcome { Ok, Failed, Error }
 
+    /// <summary>Gmail search that finds the failed message, for pasting into the Gmail search box; empty for a Fallback key.</summary>
+    public static string GmailSearchHint(KeyType keyType, string key) =>
+        keyType == KeyType.MessageId && key.Length > 0 ? $" (find it in Gmail with rfc822msgid:{key})" : "";
+
     private async Task<ProcessOutcome> ProcessAsync(SelectedMessage item, LedgerRun run, bool purge, bool dedupe, List<string> errors, CancellationToken ct)
     {
         var msg = item.Message;
@@ -353,7 +357,8 @@ public sealed class MoveWorkflow(IMailSource source, IMailTarget target, ILedger
 
     private async Task<ProcessOutcome> FailAsync(LedgerMessage row, LedgerRun run, string reason, List<string> errors, ProcessOutcome outcome, Exception? exception = null)
     {
-        logger.LogError(exception, "UID {Uid} failed: {Reason}", row.GmailUid, reason);
+        // The message stays in Gmail; the hint is the search that finds it there for manual review.
+        logger.LogError(exception, "UID {Uid} failed: {Reason}{Hint}", row.GmailUid, reason, GmailSearchHint(row.KeyType, row.Key));
         // A purge failure after a successful trash keeps the Trashed state so the message is not re-processed.
         if (row.State != MessageState.Trashed)
             row.State = MessageState.Failed;
