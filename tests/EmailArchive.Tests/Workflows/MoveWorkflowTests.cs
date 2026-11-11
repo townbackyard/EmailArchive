@@ -897,4 +897,11 @@ public class MoveWorkflowTests
         Assert.Equal(5L, Row(m).TargetUid);
         Assert.Empty(_target.Appended);
     }
+
+    [Fact]
+    public void Failure_log_hint_is_a_gmail_message_id_search()
+    {
+        Assert.Equal(" (find it in Gmail with rfc822msgid:abc@example.com)", MoveWorkflow.GmailSearchHint(KeyType.MessageId, "abc@example.com"));
+        Assert.Equal("", MoveWorkflow.GmailSearchHint(KeyType.Fallback, "2010-01-01|a@b|hello"));
+    }
 }
